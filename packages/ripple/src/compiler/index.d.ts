@@ -1,4 +1,4 @@
-import type { Program } from 'estree';
+import type * as AST from 'estree';
 import type {
 	CodeInformation as VolarCodeInformation,
 	Mapping as VolarMapping,
@@ -14,7 +14,7 @@ import type { SourceMapMappings } from '@jridgewell/sourcemap-codec';
  */
 export interface CompileResult {
 	/** The transformed AST */
-	ast: Program;
+	ast: AST.Program;
 	/** The generated JavaScript code with source map */
 	js: {
 		code: string;
@@ -22,6 +22,12 @@ export interface CompileResult {
 	};
 	/** The generated CSS */
 	css: string;
+}
+
+export interface DefinitionLocation {
+	embeddedId: string; // e.g., 'style_0', 'style_1'
+	start: number; // start offset
+	end: number; // end offset
 }
 
 export interface PluginActionOverrides {
@@ -40,13 +46,25 @@ export interface PluginActionOverrides {
 	/** Custom definition info for this mapping, false to disable */
 	definition?:
 		| {
-				description: string;
+				description?: string; // just for reference
+				// Generic location for embedded content (CSS, etc.)
+				location?: DefinitionLocation;
+				// Replace the type name in hover/definition with a different name
+				// And provide the path to import the type definitions from
+				// the `ripple` package directory, e.g. `types/index.d.ts`
+				// Currently only supported by the definition plugin
+				typeReplace?: {
+					name: string;
+					path: string;
+				};
 		  }
 		| false;
 }
 
 export interface CustomMappingData extends PluginActionOverrides {
 	generatedLengths: number[];
+	embeddedId?: string; // e.g. css regions: 'style_0', 'style_1', etc.
+	content?: string; // (e.g., css code)
 }
 
 export interface MappingData extends VolarCodeInformation {
@@ -61,7 +79,6 @@ export interface VolarMappingsResult {
 	code: string;
 	mappings: CodeMapping[];
 	cssMappings: CodeMapping[];
-	cssSources: string[];
 }
 
 /**
@@ -85,7 +102,7 @@ export interface AnalyzeOptions extends ParseOptions, Pick<CompileOptions, 'mode
 
 export interface VolarCompileOptions extends ParseOptions, SharedCompileOptions {}
 
-export function parse(source: string, options?: ParseOptions): Program;
+export function parse(source: string, options?: ParseOptions): AST.Program;
 
 export function compile(source: string, filename: string, options?: CompileOptions): CompileResult;
 

@@ -149,7 +149,9 @@ declare module 'estree' {
 	interface ImportSpecifier {
 		importKind: TSESTree.ImportSpecifier['importKind'];
 	}
-	interface ExportNamedDeclaration {
+	interface ExportNamedDeclaration
+		// doesn't seem we're using parent and assertions, removing to avoid builders errors
+		extends Omit<TSESTree.ExportNamedDeclaration, 'exportKind' | 'parent' | 'assertions'> {
 		exportKind: TSESTree.ExportNamedDeclaration['exportKind'];
 	}
 
@@ -226,6 +228,28 @@ declare module 'estree' {
 		loc: SourceLocation;
 		metadata: BaseNodeMetaData & {
 			ts_name?: string;
+			// for <style> tag
+			styleScopeHash?: string;
+			// for elements with scoped style classes
+			css?: {
+				scopedClasses: Map<
+					string,
+					{
+						start: number;
+						end: number;
+						selector: CSS.ClassSelector;
+					}
+				>;
+				topScopedClasses: Map<
+					string,
+					{
+						start: number;
+						end: number;
+						selector: CSS.ClassSelector;
+					}
+				>;
+				hash: string;
+			};
 		};
 
 		// currently only for <style> and <script> tags
@@ -1139,7 +1163,6 @@ export interface TransformClientState extends BaseState {
 	init: Array<AST.Statement> | null;
 	metadata: BaseStateMetaData;
 	namespace: NameSpace;
-	ripple_user_imports: Map<string, string>;
 	setup: Array<AST.Statement> | null;
 	stylesheets: Array<AST.CSS.StyleSheet>;
 	template: Array<string | AST.Expression> | null;

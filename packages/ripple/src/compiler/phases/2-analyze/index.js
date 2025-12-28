@@ -6,6 +6,8 @@
 	AnalysisContext,
 	ScopeInterface,
 	Visitors,
+	TopScopedClasses,
+	StyleClasses,
 } from '#compiler';
  */
 /** @import * as AST from 'estree' */
@@ -200,6 +202,51 @@ const visitors = {
 			context.state.metadata.tracking = true;
 		}
 
+		// Track #style.className or #style['className'] references
+		if (node.object.type === 'StyleIdentifier') {
+			const component = is_inside_component(context, true);
+
+			if (!component) {
+				return error(
+					'`#style` can only be used within a component',
+					context.state.analysis.module.filename,
+					node,
+				);
+			} else {
+				component.metadata.styleIdentifierPresent = true;
+			}
+
+			/** @type {string | null} */
+			let className = null;
+
+			if (!node.computed && node.property.type === 'Identifier') {
+				// #style.test
+				className = node.property.name;
+			} else if (
+				node.computed &&
+				node.property.type === 'Literal' &&
+				typeof node.property.value === 'string'
+			) {
+				// #style['test']
+				className = node.property.value;
+			} else {
+				// #style[expression] - dynamic, not allowed
+				error(
+					'`#style` property access must use a dot property or static string for css class name, not a dynamic expression',
+					context.state.analysis.module.filename,
+					node.property,
+				);
+			}
+
+			if (className !== null) {
+				context.state.metadata.styleClasses?.set(className, node.property);
+			}
+
+			return context.next();
+		} else if (node.object.type === 'ServerIdentifier') {
+			context.state.analysis.metadata.serverIdentifierPresent = true;
+		}
+
 		if (node.object.type === 'Identifier' && !node.object.tracked) {
 			const binding = context.state.scope.get(node.object.name);
 
@@ -372,7 +419,13 @@ const visitors = {
 		const elements = [];
 
 		// Track metadata for this component
-		const metadata = { await: false };
+		const metadata = {
+			await: false,
+			styleClasses: /** @type {StyleClasses} */ (new Map()),
+		};
+
+		/** @type {TopScopedClasses} */
+		const topScopedClasses = new Map();
 
 		context.next({
 			...context.state,
@@ -388,7 +441,27 @@ const visitors = {
 			analyze_css(css);
 
 			for (const node of elements) {
-				prune_css(css, node);
+				prune_css(css, node, metadata.styleClasses, topScopedClasses);
+			}
+
+			if (topScopedClasses.size > 0) {
+				node.metadata.topScopedClasses = topScopedClasses;
+			}
+
+			if (metadata.styleClasses.size > 0) {
+				node.metadata.styleClasses = metadata.styleClasses;
+
+				if (!context.state.loose) {
+					for (const [className, property] of metadata.styleClasses) {
+						if (!topScopedClasses?.has(className)) {
+							return error(
+								`CSS class ".${className}" does not exist in ${node.id?.name ? node.id.name : "this component's"} <style> block`,
+								context.state.analysis.module.filename,
+								property,
+							);
+						}
+					}
+				}
 			}
 		}
 
@@ -677,13 +750,13 @@ const visitors = {
 
 		// Store capitalized name for dynamic components/elements
 		if (node.id.tracked) {
-			const original_name = node.id.name;
-			const capitalized_name = original_name.charAt(0).toUpperCase() + original_name.slice(1);
+			const source_name = node.id.name;
+			const capitalized_name = source_name.charAt(0).toUpperCase() + source_name.slice(1);
 			node.metadata.ts_name = capitalized_name;
-			node.metadata.original_name = original_name;
+			node.metadata.source_name = source_name;
 
 			// Mark the binding as a dynamic component so we can capitalize it everywhere
-			const binding = context.state.scope.get(original_name);
+			const binding = context.state.scope.get(source_name);
 			if (binding) {
 				if (!binding.metadata) {
 					binding.metadata = {};
@@ -889,13 +962,16 @@ export function analyze(ast, filename, options = {}) {
 
 	const { scope, scopes } = create_scopes(ast, scope_root, null);
 
-	const analysis = {
+	const analysis = /** @type {AnalysisResult} */ ({
 		module: { ast, scope, scopes, filename },
 		ast,
 		scope,
 		scopes,
 		component_metadata: [],
-	};
+		metadata: {
+			serverIdentifierPresent: false,
+		},
+	});
 
 	walk(
 		ast,

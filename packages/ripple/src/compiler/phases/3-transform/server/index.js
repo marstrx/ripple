@@ -30,7 +30,11 @@ import { escape } from '../../../../utils/escaping.js';
 import { is_event_attribute } from '../../../../utils/events.js';
 import { render_stylesheets } from '../stylesheet.js';
 import { createHash } from 'node:crypto';
-import { STYLE_IDENTIFIER, CSS_HASH_IDENTIFIER } from '../../../identifier-utils.js';
+import {
+	STYLE_IDENTIFIER,
+	CSS_HASH_IDENTIFIER,
+	obfuscate_identifier,
+} from '../../../identifier-utils.js';
 
 /**
  * @param {AST.Node[]} children
@@ -643,6 +647,7 @@ const visitors = {
 			}
 		}
 	},
+
 	SwitchStatement(node, context) {
 		if (!is_inside_component(context)) {
 			return context.next();
@@ -841,9 +846,27 @@ const visitors = {
 		return b.id(STYLE_IDENTIFIER);
 	},
 
-	/** @type {Visitor<AST.ImportDeclaration, TransformServerState, AST.Node>} */
 	ImportDeclaration(node, context) {
-		if (!context.state.to_ts && node.importKind === 'type') {
+		const { state } = context;
+
+		if (!state.to_ts && node.importKind === 'type') {
+			return b.empty;
+		}
+
+		if (state.inside_server_block) {
+			if (!node.specifiers.length) {
+				return b.empty;
+			}
+
+			/** @type {AST.VariableDeclaration[]} */
+			const locals = state.server_block_locals;
+			for (const spec of node.specifiers) {
+				const original_name = spec.local.name;
+				const name = obfuscate_identifier(original_name);
+				spec.local = b.id(name);
+				locals.push(b.const(original_name, b.id(name)));
+			}
+			state.imports.add(node);
 			return b.empty;
 		}
 
@@ -1036,13 +1059,27 @@ const visitors = {
 	ServerBlock(node, context) {
 		const exports = node.metadata.exports;
 
-		if (exports.length === 0) {
-			return context.visit(node.body);
-		}
-		const file_path = context.state.filename;
+		// Convert Imports inside ServerBlock to local variables
+		// ImportDeclaration() visitor will add imports to the top of the module
+		/** @type {AST.VariableDeclaration[]} */
+		const server_block_locals = [];
+
 		const block = /** @type {AST.BlockStatement} */ (
-			context.visit(node.body, { ...context.state, inside_server_block: true })
+			context.visit(node.body, {
+				...context.state,
+				inside_server_block: true,
+				server_block_locals,
+			})
 		);
+
+		if (exports.length === 0) {
+			return {
+				...block,
+				body: [...server_block_locals, ...block.body],
+			};
+		}
+
+		const file_path = context.state.filename;
 		const rpc_modules = globalThis.rpc_modules;
 
 		if (rpc_modules) {
@@ -1061,6 +1098,7 @@ const visitors = {
 					b.thunk(
 						b.block([
 							b.var('_$_server_$_', b.object([])),
+							...server_block_locals,
 							...block.body,
 							b.return(b.id('_$_server_$_')),
 						]),
@@ -1092,6 +1130,7 @@ export function transform_server(filename, source, analysis, minify_css) {
 		stylesheets: [],
 		component_metadata,
 		inside_server_block: false,
+		server_block_locals: [],
 		filename,
 		namespace: 'html',
 		// TODO: should we remove all `to_ts` usages we use the client rendering for that?
@@ -1101,7 +1140,7 @@ export function transform_server(filename, source, analysis, minify_css) {
 
 	state.imports.add(`import * as _$_ from 'ripple/internal/server'`);
 
-	const program = walk(analysis.ast, { ...state }, visitors);
+	const program = /** @type {AST.Program} */ (walk(analysis.ast, { ...state }, visitors));
 
 	const css = render_stylesheets(state.stylesheets, minify_css);
 
@@ -1120,7 +1159,11 @@ export function transform_server(filename, source, analysis, minify_css) {
 
 	// Add async property to component functions
 	for (const import_node of state.imports) {
-		/** @type {AST.Program} */ (program).body.unshift(b.stmt(b.id(import_node)));
+		if (typeof import_node === 'string') {
+			program.body.unshift(b.stmt(b.id(import_node)));
+		} else {
+			program.body.unshift(import_node);
+		}
 	}
 
 	const js = print(program, /** @type {Visitors<AST.Node, TransformServerState>} */ (ts()), {

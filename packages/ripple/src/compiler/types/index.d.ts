@@ -1146,13 +1146,14 @@ export interface AnalysisState extends BaseState {
 }
 
 export interface TransformServerState extends BaseState {
-	imports: Set<string>;
+	imports: Set<string | AST.ImportDeclaration>;
 	init: Array<AST.Statement> | null;
 	stylesheets: AST.CSS.StyleSheet[];
 	component_metadata: AnalysisResult['component_metadata'];
 	filename: string;
 	metadata: BaseStateMetaData;
 	namespace: NameSpace;
+	server_block_locals: AST.VariableDeclaration[];
 }
 
 type UpdateList = Array<{
@@ -1169,7 +1170,8 @@ export interface TransformClientState extends BaseState {
 	final: Array<AST.Statement> | null;
 	flush_node: ((is_controlled?: boolean) => AST.Identifier) | null;
 	hoisted: Array<AST.Statement>;
-	imports: Set<string>;
+	imports: Set<string | AST.ImportDeclaration>;
+	server_block_locals: AST.VariableDeclaration[];
 	init: Array<AST.Statement> | null;
 	metadata: BaseStateMetaData;
 	namespace: NameSpace;

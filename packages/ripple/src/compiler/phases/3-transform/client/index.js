@@ -8,7 +8,6 @@
 	VisitorClientContext,
 	TransformClientState,
 	ScopeInterface,
-	Visitor,
 	Visitors
 }	from '#compiler';
  */
@@ -413,9 +412,31 @@ const visitors = {
 		return id;
 	},
 
-	/** @type {Visitor<AST.ImportDeclaration, TransformClientState, AST.Node>} */
 	ImportDeclaration(node, context) {
-		if (!context.state.to_ts && node.importKind === 'type') {
+		const { state } = context;
+
+		if (!state.to_ts && node.importKind === 'type') {
+			return b.empty;
+		}
+
+		if (state.to_ts && state.inside_server_block) {
+			/** @type {AST.VariableDeclaration[]} */
+			const locals = state.server_block_locals;
+			for (const spec of node.specifiers) {
+				const original_name = spec.local.name;
+				const name = obfuscate_identifier(original_name);
+				if (
+					spec.type !== 'ImportSpecifier' ||
+					(spec.imported && /** @type {AST.Identifier} */ (spec.imported).name !== spec.local.name)
+				) {
+					spec.local.name = name;
+				} else {
+					spec.local = b.id(name);
+				}
+				spec.local.metadata.source_name = original_name;
+				locals.push(b.const(original_name, b.id(name)));
+			}
+			state.imports.add(node);
 			return b.empty;
 		}
 
@@ -423,8 +444,7 @@ const visitors = {
 			...node,
 			specifiers: node.specifiers
 				.filter(
-					(spec) =>
-						context.state.to_ts || /** @type {AST.ImportSpecifier} */ (spec).importKind !== 'type',
+					(spec) => state.to_ts || /** @type {AST.ImportSpecifier} */ (spec).importKind !== 'type',
 				)
 				.map((spec) => context.visit(spec)),
 		});
@@ -437,7 +457,6 @@ const visitors = {
 		return context.visit(/** @type {AST.Expression} */ (node.expression));
 	},
 
-	/** @type {Visitor<AST.CallExpression, TransformClientState, AST.Node>} */
 	CallExpression(node, context) {
 		if (!context.state.to_ts) {
 			delete node.typeArguments;
@@ -663,7 +682,6 @@ const visitors = {
 		return b.call('_$_.get', /** @type {AST.Expression} */ (context.visit(node.argument)));
 	},
 
-	/** @type {Visitor<AST.MemberExpression, TransformClientState, AST.Node>} */
 	MemberExpression(node, context) {
 		if (context.state.metadata?.tracking === false) {
 			context.state.metadata.tracking = true;
@@ -727,7 +745,6 @@ const visitors = {
 		return context.next();
 	},
 
-	/** @type {Visitor<AST.VariableDeclarator, TransformClientState, AST.Node>} */
 	VariableDeclarator(node, context) {
 		// In TypeScript mode, capitalize identifiers that are used as dynamic components
 		if (context.state.to_ts) {
@@ -2160,8 +2177,17 @@ const visitors = {
 
 	ServerBlock(node, context) {
 		if (context.state.to_ts) {
+			// Convert Imports inside ServerBlock to local variables
+			// ImportDeclaration() visitor will add imports to the top of the module
+			/** @type {AST.VariableDeclaration[]} */
+			const server_block_locals = [];
+
 			const block = /** @type {AST.BlockStatement} */ (
-				context.visit(node.body, { ...context.state, inside_server_block: true })
+				context.visit(node.body, {
+					...context.state,
+					inside_server_block: true,
+					server_block_locals,
+				})
 			);
 
 			/** @type {AST.Property[]} */
@@ -2181,7 +2207,9 @@ const visitors = {
 				}
 			}
 
-			const value = b.call(b.thunk(b.block([...block.body, b.return(b.object(properties))])));
+			const value = b.call(
+				b.thunk(b.block([...server_block_locals, ...block.body, b.return(b.object(properties))])),
+			);
 			value.loc = node.loc;
 
 			const server_identifier = b.id(SERVER_IDENTIFIER);
@@ -2226,11 +2254,9 @@ const visitors = {
 		);
 	},
 
-	/** @type {Visitor<AST.Program, TransformClientState, AST.Node>} */
 	Program(node, context) {
 		/** @type {Array<AST.Statement | AST.Directive | AST.ModuleDeclaration>} */
 		const statements = [];
-		const { state } = context;
 
 		for (const statement of node.body) {
 			statements.push(
@@ -3563,6 +3589,7 @@ export function transform_client(filename, source, analysis, to_ts, minify_css) 
 		scopes: analysis.scopes,
 		inside_server_block: false,
 		serverIdentifierPresent: analysis.metadata.serverIdentifierPresent,
+		server_block_locals: [],
 		stylesheets: [],
 		to_ts,
 		filename,
@@ -3584,7 +3611,11 @@ export function transform_client(filename, source, analysis, to_ts, minify_css) 
 	}
 
 	for (const import_node of state.imports) {
-		program.body.unshift(b.stmt(b.id(import_node)));
+		if (typeof import_node === 'string') {
+			program.body.unshift(b.stmt(b.id(import_node)));
+		} else {
+			program.body.unshift(import_node);
+		}
 	}
 
 	if (state.events.size > 0) {

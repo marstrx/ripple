@@ -402,15 +402,13 @@ const visitors = {
 	ServerIdentifier(node, context) {
 		const id = b.id(SERVER_IDENTIFIER);
 		id.metadata.source_name = '#server';
-		id.loc = node.loc;
-		return id;
+		return {...node, ...id};
 	},
 
 	StyleIdentifier(node, context) {
 		const id = b.id(STYLE_IDENTIFIER);
 		id.metadata.source_name = '#style';
-		id.loc = node.loc;
-		return id;
+		return {...node, ...id};
 	},
 
 	ImportDeclaration(node, context) {
@@ -420,7 +418,7 @@ const visitors = {
 			return b.empty;
 		}
 
-		if (state.to_ts && state.inside_server_block) {
+		if (state.to_ts && state.ancestor_server_block) {
 			/** @type {AST.VariableDeclaration[]} */
 			const locals = state.server_block_locals;
 			for (const spec of node.specifiers) {
@@ -2082,7 +2080,7 @@ const visitors = {
 			return b.empty;
 		}
 
-		if (context.state.to_ts && context.state.inside_server_block) {
+		if (context.state.to_ts && context.state.ancestor_server_block) {
 			// All validation errors will be handled in the analysis phase
 			// So we can safely print these
 			if (node.declaration) {
@@ -2230,7 +2228,7 @@ const visitors = {
 			const block = /** @type {AST.BlockStatement} */ (
 				context.visit(node.body, {
 					...context.state,
-					inside_server_block: true,
+					ancestor_server_block: node,
 					server_block_locals,
 				})
 			);
@@ -2258,35 +2256,31 @@ const visitors = {
 			return server_const;
 		}
 
-		const exports = node.metadata.exports;
-
 		if (!context.state.serverIdentifierPresent) {
 			// no point printing the client-side block if #server.func is not used
 			return b.empty;
 		}
 
 		const file_path = context.state.filename;
-
-		return b.var(
-			SERVER_IDENTIFIER,
-			b.object(
-				/** @type {AST.ServerBlock['metadata']['exports']} */ (exports).map((name) => {
-					const func_path = file_path + '#' + name;
-					// needs to be a sha256 hash of func_path, to avoid leaking file structure
-					const hash = createHash('sha256').update(func_path).digest('hex').slice(0, 8);
-
-					return b.prop(
-						'init',
-						b.id(name),
-						b.function(
-							null,
-							[b.rest(b.id('args'))],
-							b.block([b.return(b.call('_$_.rpc', b.literal(hash), b.id('args')))]),
-						),
-					);
-				}),
-			),
-		);
+		/** @type {AST.Property[]} */
+		const props = [];
+		for (const name of node.metadata.exports) {
+			const func_path = file_path + '#' + name;
+			// needs to be a sha256 hash of func_path, to avoid leaking file structure
+			const hash = createHash('sha256').update(func_path).digest('hex').slice(0, 8);
+			props.push(
+				b.prop(
+					'init',
+					b.id(name),
+					b.function(
+						null,
+						[b.rest(b.id('args'))],
+						b.block([b.return(b.call('_$_.rpc', b.literal(hash), b.id('args')))]),
+					),
+				),
+			);
+		}
+		return b.var(SERVER_IDENTIFIER, b.object(props));
 	},
 
 	Program(node, context) {
@@ -3699,7 +3693,7 @@ export function transform_client(filename, source, analysis, to_ts, minify_css) 
 		flush_node: null,
 		scope: analysis.scope,
 		scopes: analysis.scopes,
-		inside_server_block: false,
+		ancestor_server_block: undefined,
 		serverIdentifierPresent: analysis.metadata.serverIdentifierPresent,
 		server_block_locals: [],
 		stylesheets: [],

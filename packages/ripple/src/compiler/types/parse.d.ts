@@ -16,6 +16,7 @@ import type * as ESTreeJSX from 'estree-jsx';
 import type * as ESRap from 'esrap';
 import type * as SourceMap from '@jridgewell/sourcemap-codec';
 import type * as RippleCompiler from '#compiler';
+import type { RippleCompileError } from 'ripple/compiler';
 
 type ForInit = boolean | 'await';
 
@@ -183,6 +184,8 @@ export namespace Parse {
 	export interface Options extends Omit<acorn.Options, 'onComment' | 'ecmaVersion'> {
 		rippleOptions: {
 			loose: boolean;
+			errors: RippleCompileError[];
+			filename: string | undefined;
 		};
 		// The type has "latest" but it's converted to 1e8 at runtime
 		// and if (ecmaVersion >= 2015) { ecmaVersion -= 2009 }
@@ -1121,6 +1124,12 @@ export namespace Parse {
 			containsEsc?: boolean,
 		): void;
 
+		tsTryParseTypeParameters(
+			parseModifiers?: (node: AST.Node) => void | null,
+		): AST.TSTypeParameterDeclaration;
+
+		tsCheckTypeAnnotationForReadOnly(node: AST.TSTypeOperator): void;
+
 		/**
 		 * Get property kind from name
 		 * @param prop Property node
@@ -1660,7 +1669,10 @@ export namespace Parse {
 		 * @param startLoc Start location
 		 * @returns JSXClosingElement or JSXClosingFragment
 		 */
-		jsx_parseClosingElementAt(startPos: number, startLoc: AST.Position): AST.Node;
+		jsx_parseClosingElementAt(
+			startPos: number,
+			startLoc: AST.Position,
+		): ESTreeJSX.JSXClosingElement;
 
 		/**
 		 * Parse JSX element at position
@@ -1668,19 +1680,19 @@ export namespace Parse {
 		 * @param startLoc Start location
 		 * @returns JSXElement or JSXFragment
 		 */
-		jsx_parseElementAt(startPos: number, startLoc: AST.Position): AST.Node;
+		jsx_parseElementAt(startPos: number, startLoc: AST.Position): ESTreeJSX.JSXElement;
 
 		/**
 		 * Parse JSX text node
 		 * @returns JSXText node
 		 */
-		jsx_parseText(): AST.Node;
+		jsx_parseText(): ESTreeJSX.JSXText;
 
 		/**
 		 * Parse complete JSX element
 		 * @returns JSXElement or JSXFragment
 		 */
-		jsx_parseElement(): AST.Node;
+		jsx_parseElement(): ESTreeJSX.JSXElement;
 
 		// ============================================================
 		// Try-Parse for Recovery

@@ -1729,6 +1729,58 @@ files = [...(files ?? []), ...dt.files];`;
 			const result = await format(expected, { singleQuote: true, printWidth: 100 });
 			expect(result).toBeWithNewline(expected);
 		});
+
+		it('should preserve <script> tags', async () => {
+			const expected = `<script>
+  const i = 2;
+</script>`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve component as a named or an anonymous property', async () => {
+			const expected = `const UI = {
+  span: component Span() {
+    <span>{'Hello from Span'}</span>
+  },
+  button: component({ children }) {
+    <button>
+      <children />
+    </button>
+  },
+};`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve the order of try / pending / catch block', async () => {
+			const expected = `component Test() {
+  let items: TrackedArray<string> | null = null;
+  let error: string | null = null;
+
+  async function* throwingIterable() {
+    throw new Error('Async error');
+  }
+
+  try {
+    items = await TrackedArray.fromAsync(throwingIterable());
+    for (const item of items) {
+      <li>{item}</li>
+    }
+  } pending {
+    <div>{'Loading...'}</div>
+  } catch (e) {
+    error = (e as Error).message;
+  } finally {
+    <div>{'finally block'}</div>
+  }
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
 	});
 
 	describe('edge cases', () => {
@@ -2164,6 +2216,28 @@ const obj2 = #{
 		expect(result).toBeWithNewline(expected);
 	});
 
+	it('should preserve comments inside js/ts blocks inside markup', async () => {
+		const expected = `component App() {
+  <button
+    onClick={() => {
+      @hasError = false;
+      try {
+        @hasError = false;
+        // @ts-ignore
+        obj['nonexistent']();
+      } catch {
+        // @hasError = true;
+      }
+    }}
+  >
+    {'Nonexistent'}
+  </button>
+}`;
+
+		const result = await format(expected, { singleQuote: true, printWidth: 100 });
+		expect(result).toBeWithNewline(expected);
+	});
+
 	it('should properly format array with various sized strings and 100 printWidth', async () => {
 		const expected = `component App() {
   const d = [
@@ -2566,6 +2640,26 @@ const items = [] as unknown[];`;
 			expect(result).toBeWithNewline(expected);
 		});
 
+		it('should format nested generics types', async () => {
+			const expected = `component Test() {
+  const [children, rest] = trackSplit<
+    PropsWithChildren<{
+      class: string;
+      id: string;
+      onClick: EventListener;
+    }>,
+    keyof PropsWithChildren<{
+      class: string;
+      id: string;
+      onClick: EventListener;
+    }>
+  >(props as Props, ['children']);
+}`;
+
+			const result = await format(expected, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
 		it('should format TypeScript tuple types (TSTupleType)', async () => {
 			const input = `type T = [string, number, boolean];`;
 			const expected = `type T = [string, number, boolean];`;
@@ -2647,6 +2741,15 @@ const items = [] as unknown[];`;
   <div>{length}</div>
 }`;
 			const result = await format(input);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should keep the TSInstantiationExpression ', async () => {
+			const expected = `component Test() {
+  const items = (Promise<string[]>).reject(new Error('Async error'));
+}`;
+
+			const result = await format(expected, { singleQuote: true });
 			expect(result).toBeWithNewline(expected);
 		});
 

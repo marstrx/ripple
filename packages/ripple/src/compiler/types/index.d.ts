@@ -4,7 +4,7 @@ import type { TSESTree } from '@typescript-eslint/types';
 import type { NAMESPACE_URI } from '../../runtime/internal/client/constants.js';
 import type { Parse } from '#parser';
 import type * as ESRap from 'esrap';
-import type { RippleCompileError } from 'ripple/compiler';
+import type { RippleCompileError, CompileOptions } from 'ripple/compiler';
 
 export type RpcModules = Map<string, [string, string]>;
 
@@ -21,8 +21,6 @@ interface BaseNodeMetaData {
 	is_capitalized?: boolean;
 	has_await?: boolean;
 	commentContainerId?: number;
-	openingTagEnd?: number;
-	openingTagEndLoc?: AST.Position;
 	parenthesized?: boolean;
 	elementLeadingComments?: AST.Comment[];
 	inside_component_top_level?: boolean;
@@ -104,6 +102,7 @@ declare module 'estree' {
 		RefAttribute: RefAttribute;
 		SpreadAttribute: SpreadAttribute;
 		ParenthesizedExpression: ParenthesizedExpression;
+		ScriptContent: ScriptContent;
 	}
 
 	interface ExpressionMap {
@@ -125,6 +124,15 @@ declare module 'estree' {
 
 	interface Comment {
 		context?: Parse.CommentMetaData | null;
+	}
+
+	// For now only ObjectExpression needs printInline
+	// Needed to avoid ts pragma comments being on the wrong line that
+	// does not affect the next line as in the source code
+	interface ObjectExpression {
+		metadata: BaseNodeMetaData & {
+			printInline?: boolean;
+		};
 	}
 
 	/**
@@ -218,6 +226,8 @@ declare module 'estree' {
 		children: ESTreeJSX.JSXElement['children'];
 		selfClosing?: boolean;
 		unclosed?: boolean;
+		openingElement: ESTreeJSX.JSXOpeningElement;
+		closingElement: ESTreeJSX.JSXClosingElement;
 	}
 
 	interface Html extends AST.BaseNode {
@@ -250,17 +260,10 @@ declare module 'estree' {
 				hash: string;
 			};
 		};
-
-		// currently only for <style> and <script> tags
-		openingElement?: ESTreeJSX.JSXOpeningElement;
-		closingElement?: ESTreeJSX.JSXClosingElement;
-
+		openingElement: ESTreeJSX.JSXOpeningElement;
+		closingElement: ESTreeJSX.JSXClosingElement;
 		// for <style> tags
 		css?: string;
-
-		// for <script> tags
-		content?: string;
-
 		innerComments?: Comment[];
 	}
 
@@ -280,6 +283,12 @@ declare module 'estree' {
 		metadata: BaseNodeMetaData & {
 			exports: Set<string>;
 		};
+	}
+
+	// ScriptContent is only used by Prettier currently
+	interface ScriptContent extends Omit<AST.Element, 'type'> {
+		type: 'ScriptContent';
+		content: string;
 	}
 
 	/**
@@ -763,8 +772,10 @@ declare module 'estree' {
 	interface TSInferType extends Omit<AcornTSNode<TSESTree.TSInferType>, 'typeParameter'> {
 		typeParameter: TSTypeParameter;
 	}
-	interface TSInstantiationExpression extends AcornTSNode<TSESTree.TSInstantiationExpression> {
+	interface TSInstantiationExpression
+		extends Omit<AcornTSNode<TSESTree.TSInstantiationExpression>, 'typeArguments' | 'expression'> {
 		expression: AST.Expression;
+		typeArguments: TSTypeParameterInstantiation;
 	}
 	interface TSInterfaceBody extends Omit<AcornTSNode<TSESTree.TSInterfaceBody>, 'body'> {
 		body: TypeElement[];
@@ -893,7 +904,10 @@ declare module 'estree' {
 	}
 	interface TSTypeParameterDeclaration
 		extends Omit<AcornTSNode<TSESTree.TSTypeParameterDeclaration>, 'params'> {
-		params: TypeNode[];
+		params: TSTypeParameter[];
+		extra?: {
+			trailingComma: number;
+		};
 	}
 	interface TSTypeParameterInstantiation
 		extends Omit<AcornTSNode<TSESTree.TSTypeParameterInstantiation>, 'params'> {
@@ -975,6 +989,7 @@ export interface AnalysisResult {
 		serverIdentifierPresent: boolean;
 	};
 	errors: RippleCompileError[];
+	comments: AST.CommentWithLocation[];
 }
 
 /**
@@ -1125,6 +1140,7 @@ export interface BaseState {
 	serverIdentifierPresent: boolean;
 	ancestor_server_block: AST.ServerBlock | undefined;
 	inside_head?: boolean;
+	keep_component_style?: boolean;
 
 	/** Common For All */
 	to_ts: boolean;
@@ -1146,6 +1162,7 @@ export interface AnalysisState extends BaseState {
 	metadata: BaseStateMetaData & {
 		styleClasses?: StyleClasses;
 	};
+	mode: CompileOptions['mode'];
 }
 
 export interface TransformServerState extends BaseState {
@@ -1179,7 +1196,6 @@ export interface TransformClientState extends BaseState {
 	init: Array<AST.Statement> | null;
 	metadata: BaseStateMetaData;
 	namespace: NameSpace;
-	setup: Array<AST.Statement> | null;
 	stylesheets: Array<AST.CSS.StyleSheet>;
 	template: Array<string | AST.Expression> | null;
 	update: UpdateList | null;
@@ -1193,11 +1209,21 @@ type SpecializedVisitors<T extends AST.Node | AST.CSS.Node, U> = {
 	[K in T['type']]?: Visitor<NodeOf<K, T>, U, T>;
 };
 
+type VisitFn<V> = (node: V) => void;
+
+export type CatchAllVisitor<T, U, V> = (
+	node: T,
+	context: Context<V, U>,
+	visit: VisitFn<V>,
+) => V | void;
+
 export type Visitor<T, U, V> = (node: T, context: Context<V, U>) => V | void;
 
 export type Visitors<T extends AST.Node | AST.CSS.Node, U> = T['type'] extends '_'
 	? never
-	: SpecializedVisitors<T, U> & { _?: Visitor<T, U, T> };
+	: SpecializedVisitors<T, U> & {
+			_?: CatchAllVisitor<T, U, T>;
+		};
 
 export interface Context<T, U>
 	extends Omit<ESRap.Context, 'path' | 'state' | 'visit' | 'next' | 'stop'> {

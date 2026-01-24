@@ -391,9 +391,9 @@ export function is_declared_function_within_component(node, context) {
 
 	if (node.type === 'Identifier' && component) {
 		const binding = context.state.scope.get(node.name);
-		const component_scope = context.state.scopes?.get(component);
+		const component_scope = context.state.scopes.get(component);
 
-		if (binding !== null && component_scope !== null) {
+		if (binding !== null && component_scope !== undefined) {
 			if (
 				binding.declaration_kind !== 'function' &&
 				binding.initial?.type !== 'FunctionDeclaration' &&
@@ -632,7 +632,9 @@ function normalize_child(node, normalized, context) {
 	} else if (
 		node.type === 'Element' &&
 		node.id.type === 'Identifier' &&
-		((node.id.name === 'style' && !context.state.inside_head) ||
+		((node.id.name === 'style' &&
+			!context.state.inside_head &&
+			!context.state.keep_component_style) ||
 			node.id.name === 'head' ||
 			(node.id.name === 'title' && context.state.inside_head))
 	) {
@@ -773,4 +775,27 @@ export function is_binding_function(binding, scope, visited = new Set()) {
 	}
 
 	return false;
+}
+
+/**
+ * @param {AST.TryStatement} try_parent_stmt
+ * @param {CommonContext} context
+ * @returns {boolean}
+ */
+export function is_inside_try_block(try_parent_stmt, context) {
+	/** @type {AST.BlockStatement | null} */
+	let block_node = null;
+	for (let i = context.path.length - 1; i >= 0; i -= 1) {
+		const context_node = context.path[i];
+
+		if (context_node.type === 'BlockStatement') {
+			block_node = /** @type {AST.BlockStatement} */ (context_node);
+		}
+
+		if (context_node === try_parent_stmt) {
+			break;
+		}
+	}
+
+	return block_node !== null && try_parent_stmt.block === block_node;
 }

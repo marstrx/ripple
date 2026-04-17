@@ -1,0 +1,115 @@
+# @ripple-ts/prettier-plugin
+
+## 0.3.13
+
+### Patch Changes
+
+- [#862](https://github.com/Ripple-TS/ripple/pull/862)
+  [`48af856`](https://github.com/Ripple-TS/ripple/commit/48af85678d5e1b32bb1c5e3fbb2fb07498bc88a3)
+  Thanks [@leonidaz](https://github.com/leonidaz)! - Add a release changeset for
+  the async tracking work introduced in commit
+  `4eb4d6851573d771d65f1e85b1b442ad3cdc53d2`.
+
+  This ships async tracking as a first-class feature in Ripple:
+  - remove and prohibit direct component-level `await`; async component flows now
+    require using `trackAsync()` (with `trackPending()` for pending state checks)
+  - add `trackAsync()` and `trackPending()` support so async values can be read
+    through Ripple's reactive runtime using tracked async values
+  - update compiler/runtime behavior for `try`/`catch`/`pending` boundaries so
+    async pending and error states can render and recover correctly in client and
+    SSR paths
+  - align `@ripple-ts/compat-react` async boundary behavior with the new Ripple
+    async tracking semantics
+  - update editor/tooling integration to match the new async syntax/runtime shape
+
+- [`6e11177`](https://github.com/Ripple-TS/ripple/commit/6e111778cae4e7d9876e51e293520f0859eb5890)
+  Thanks [@trueadm](https://github.com/trueadm)! - Add `.rsrx` support across
+  Ripple tooling and rename the repository's tracked `.ripple` modules to `.rsrx`.
+
+## 0.3.12
+
+### Patch Changes
+
+- [#859](https://github.com/Ripple-TS/ripple/pull/859)
+  [`cdd31ba`](https://github.com/Ripple-TS/ripple/commit/cdd31ba4c07ce504b01d56533e19a6ba37879f5a)
+  Thanks [@trueadm](https://github.com/trueadm)! - Add first-phase `.tsrx` support
+  across the core Ripple tooling so Vite, Rollup, TypeScript, the language server,
+  Prettier, ESLint, and editor integrations accept both `.ripple` and `.tsrx`
+  files.
+
+## 0.3.11
+
+## 0.3.10
+
+## 0.3.9
+
+## 0.3.8
+
+## 0.3.7
+
+### Patch Changes
+
+- [#832](https://github.com/Ripple-TS/ripple/pull/832)
+  [`9ca9310`](https://github.com/Ripple-TS/ripple/commit/9ca9310550a800f4435821ed84b24bdd4f243117)
+  Thanks [@trueadm](https://github.com/trueadm)! - Fix formatting of TypeScript
+  interface call signatures with conditional types (including `infer`) so Prettier
+  preserves them instead of emitting unknown-node placeholders.
+
+## 0.3.6
+
+## 0.3.5
+
+## 0.3.4
+
+### Patch Changes
+
+- [`92982cd`](https://github.com/Ripple-TS/ripple/commit/92982cd7b918d0afee9334c74765573b30c8a645)
+  Thanks [@trueadm](https://github.com/trueadm)! - feat(compiler): add lazy
+  destructuring syntax (`&{...}` and `&[...]`)
+
+  Lazy destructuring defers property/index access until the binding is read,
+  preserving reactivity for destructured props. Works with default values,
+  compound assignment operators, and update expressions.
+
+## 0.3.3
+
+## 0.3.2
+
+## 0.3.1
+
+## 0.3.0
+
+### Minor Changes
+
+- [#779](https://github.com/Ripple-TS/ripple/pull/779)
+  [`74a10cc`](https://github.com/Ripple-TS/ripple/commit/74a10cc5701962cd7c72b144d59b35ecb76263a3)
+  Thanks [@leonidaz](https://github.com/leonidaz)! - Introduces #ripple namespace
+  for creating ripple reactive entities without imports, such as array, object,
+  map, set, date, url, urlSearchParams, mediaQuery. Adds track, untrack,
+  trackSplit, effect, context, server, style to the namespace. Deprecates #[] and
+  #{} in favor of #ripple[] and #ripple{}. Renames types and actual reactive
+  imports for TrackedX entities, such as TrackedArray, TrackedObject, etc. into
+  RippleArray, RippleObjec, etc.
+
+### Patch Changes
+
+- [#784](https://github.com/Ripple-TS/ripple/pull/784)
+  [`d38c8f2`](https://github.com/Ripple-TS/ripple/commit/d38c8f21201c8bb50293d12da2df233353b9837b)
+  Thanks [@anubra266](https://github.com/anubra266)! - fix: preserve parentheses
+  around IIFE callee in prettier plugin
+
+## 0.2.216
+
+## 0.2.215
+
+## 0.2.214
+
+## 0.2.213
+
+## 0.2.212
+
+## 0.2.211
+
+## 0.2.210
+
+## 0.2.209

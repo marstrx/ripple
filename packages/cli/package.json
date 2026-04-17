@@ -1,6 +1,6 @@
 {
   "name": "@ripple-ts/cli",
-  "version": "0.2.198",
+  "version": "0.3.13",
   "description": "Interactive CLI tool for creating Ripple applications",
   "type": "module",
   "license": "MIT",
@@ -20,7 +20,10 @@
   "bugs": {
     "url": "https://github.com/Ripple-TS/ripple/issues"
   },
-  "homepage": "https://ripplejs.com",
+  "homepage": "https://ripple-ts.com",
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "./dist/index.js"
   ],

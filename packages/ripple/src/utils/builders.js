@@ -8,13 +8,22 @@ import { sanitize_template_string } from './sanitize_template_string.js';
  * @template {AST.Node} T
  * @param {T} node
  * @param {AST.NodeWithLocation | undefined} loc_info
+ * @param {boolean} is_deep_copy
  * @returns {T}
  */
-function set_location(node, loc_info) {
+export function set_location(node, loc_info, is_deep_copy = false) {
 	if (loc_info) {
 		node.start = loc_info.start;
 		node.end = loc_info.end;
-		node.loc = loc_info.loc;
+
+		if (is_deep_copy) {
+			node.loc = {
+				start: { ...loc_info.loc.start },
+				end: { ...loc_info.loc.end },
+			};
+		} else {
+			node.loc = loc_info.loc;
+		}
 	}
 
 	return node;
@@ -173,7 +182,7 @@ export function call(callee, ...args) {
 
 /**
  * @param {string | AST.Expression} callee
- * @param {...AST.Expression} args
+ * @param {...(AST.Expression | AST.SpreadElement | false | undefined)} args
  * @returns {AST.ChainExpression}
  */
 export function maybe_call(callee, ...args) {
@@ -311,10 +320,20 @@ export function get(name, body) {
 
 /**
  * @param {string} name
+ * @param {AST.NodeWithLocation} [loc_info]
  * @returns {AST.Identifier}
  */
-export function id(name) {
-	return { type: 'Identifier', name, metadata: { path: [] } };
+export function id(name, loc_info) {
+	/** @type {AST.Identifier} */
+	const node = {
+		type: 'Identifier',
+		name,
+		optional: false,
+		decorators: [],
+		metadata: { path: [] },
+	};
+
+	return set_location(node, loc_info);
 }
 
 /**
@@ -362,14 +381,238 @@ export function literal(value, loc_info) {
  * @param {string | AST.Expression | AST.PrivateIdentifier} property
  * @param {boolean} computed
  * @param {boolean} optional
+ * @param {AST.NodeWithLocation} [loc_info]
  * @returns {AST.MemberExpression}
  */
-export function member(object, property, computed = false, optional = false) {
+export function member(object, property, computed = false, optional = false, loc_info) {
 	if (typeof property === 'string') {
 		property = id(property);
 	}
 
-	return { type: 'MemberExpression', object, property, computed, optional, metadata: { path: [] } };
+	/** @type {AST.MemberExpression} */
+	const node = {
+		type: 'MemberExpression',
+		object,
+		property,
+		computed,
+		optional,
+		metadata: { path: [] },
+	};
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Expression} expression
+ * @param {AST.Node} type_annotation
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSAsExpression}
+ */
+export function ts_as(expression, type_annotation, loc_info) {
+	const node = /** @type {AST.TSAsExpression} */ ({
+		type: 'TSAsExpression',
+		expression,
+		typeAnnotation: type_annotation,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Expression} expression
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.ParenthesizedExpression}
+ */
+export function parenthesized(expression, loc_info) {
+	const node = /** @type {AST.ParenthesizedExpression} */ ({
+		type: 'ParenthesizedExpression',
+		expression,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Identifier | AST.MemberExpression} expr_name
+ * @param {AST.Node | null} [type_arguments]
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSTypeQuery}
+ */
+export function ts_type_query(expr_name, type_arguments = null, loc_info) {
+	const node = /** @type {AST.TSTypeQuery} */ ({
+		type: 'TSTypeQuery',
+		exprName: expr_name,
+		typeArguments: type_arguments,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Node[]} params
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSTypeParameterInstantiation}
+ */
+export function ts_type_parameter_instantiation(params, loc_info) {
+	const node = /** @type {AST.TSTypeParameterInstantiation} */ ({
+		type: 'TSTypeParameterInstantiation',
+		params,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Identifier | AST.Node} type_name
+ * @param {AST.Node | null} [type_arguments]
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSTypeReference}
+ */
+export function ts_type_reference(type_name, type_arguments = null, loc_info) {
+	const node = /** @type {AST.TSTypeReference} */ ({
+		type: 'TSTypeReference',
+		typeName: type_name,
+		typeArguments: type_arguments,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Literal} literal_node
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSLiteralType}
+ */
+export function ts_literal_type(literal_node, loc_info) {
+	const node = /** @type {AST.TSLiteralType} */ ({
+		type: 'TSLiteralType',
+		literal: literal_node,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Node[]} types
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSIntersectionType}
+ */
+export function ts_intersection_type(types, loc_info) {
+	const node = /** @type {AST.TSIntersectionType} */ ({
+		type: 'TSIntersectionType',
+		types,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {'string' | 'number' | 'boolean' | 'any' | 'void' | 'null' | 'undefined' | 'never' | 'unknown' | 'bigint' | 'symbol' | 'object'} keyword
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TypeNode}
+ */
+export function ts_keyword_type(keyword, loc_info) {
+	/** @type {Record<string, string>} */
+	const keyword_to_type = {
+		string: 'TSStringKeyword',
+		number: 'TSNumberKeyword',
+		boolean: 'TSBooleanKeyword',
+		any: 'TSAnyKeyword',
+		void: 'TSVoidKeyword',
+		null: 'TSNullKeyword',
+		undefined: 'TSUndefinedKeyword',
+		never: 'TSNeverKeyword',
+		unknown: 'TSUnknownKeyword',
+		bigint: 'TSBigIntKeyword',
+		symbol: 'TSSymbolKeyword',
+		object: 'TSObjectKeyword',
+	};
+
+	const node = /** @type {AST.TypeNode} */ ({
+		type: keyword_to_type[keyword],
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Node} type_annotation
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSTypeAnnotation}
+ */
+export function ts_type_annotation(type_annotation, loc_info) {
+	const node = /** @type {AST.TSTypeAnnotation} */ ({
+		type: 'TSTypeAnnotation',
+		typeAnnotation: type_annotation,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Expression} key
+ * @param {AST.Node | null} type_annotation
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSPropertySignature}
+ */
+export function ts_property_signature(key, type_annotation = null, loc_info) {
+	const node = /** @type {AST.TSPropertySignature} */ ({
+		type: 'TSPropertySignature',
+		key,
+		accessibility: undefined,
+		computed: false,
+		optional: false,
+		readonly: false,
+		static: false,
+		kind: 'init',
+		typeAnnotation: type_annotation,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Node[]} members
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSTypeLiteral}
+ */
+export function ts_type_literal(members, loc_info) {
+	const node = /** @type {AST.TSTypeLiteral} */ ({
+		type: 'TSTypeLiteral',
+		members,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
+}
+
+/**
+ * @param {AST.Identifier} id
+ * @param {AST.Node} type_annotation
+ * @param {AST.NodeWithLocation} [loc_info]
+ * @returns {AST.TSTypeAliasDeclaration}
+ */
+export function ts_type_alias(id, type_annotation, loc_info) {
+	const node = /** @type {AST.TSTypeAliasDeclaration} */ ({
+		type: 'TSTypeAliasDeclaration',
+		id,
+		typeParameters: undefined,
+		typeAnnotation: type_annotation,
+		declare: false,
+		metadata: { path: [] },
+	});
+
+	return set_location(node, loc_info);
 }
 
 /**
@@ -390,10 +633,14 @@ export function member_id(path) {
 
 /**
  * @param {Array<AST.Property | AST.SpreadElement>} properties
+ * @param {AST.NodeWithLocation} [loc_info]
  * @returns {AST.ObjectExpression}
  */
-export function object(properties) {
-	return { type: 'ObjectExpression', properties, metadata: { path: [] } };
+export function object(properties, loc_info) {
+	/** @type {AST.ObjectExpression} */
+	const node = { type: 'ObjectExpression', properties, metadata: { path: [] } };
+
+	return set_location(node, loc_info);
 }
 
 /**
@@ -710,10 +957,13 @@ function function_builder(id, params, body, async = false, loc_info) {
  * @param {AST.Expression} test
  * @param {AST.Statement} consequent
  * @param {AST.Statement | null} [alternate]
+ * @param {AST.NodeWithLocation} [loc_info]
  * @returns {AST.IfStatement}
  */
-function if_builder(test, consequent, alternate) {
-	return { type: 'IfStatement', test, consequent, alternate, metadata: { path: [] } };
+function if_builder(test, consequent, alternate, loc_info) {
+	/** @type {AST.IfStatement} */
+	const node = { type: 'IfStatement', test, consequent, alternate, metadata: { path: [] } };
+	return set_location(node, loc_info);
 }
 
 /**
@@ -801,15 +1051,17 @@ export function try_builder(block, handler = null, finalizer = null, pending = n
 
 /**
  * @param {AST.Pattern | null} param
+ * @param {AST.Pattern | null} reset_param
  * @param {AST.BlockStatement} body
  * @param {AST.NodeWithLocation} [loc_info]
  * @return {AST.CatchClause}
  */
-export function catch_clause_builder(param, body, loc_info) {
+export function catch_clause_builder(param, reset_param, body, loc_info) {
 	/** @type {AST.CatchClause} */
 	const node = {
 		type: 'CatchClause',
 		param,
+		resetParam: reset_param,
 		body,
 		metadata: { path: [] },
 	};

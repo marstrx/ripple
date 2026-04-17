@@ -2,11 +2,11 @@ name: Publish to pkg.pr.new
 on:
   push:
     branches: [main, develop]
-    tags: ['!**']
-    paths: ['packages/**']
+    tags: ["!**"]
+    paths: ["packages/**"]
   pull_request:
     types: [opened, synchronize]
-    paths: ['packages/**']
+    paths: ["packages/**"]
   pull_request_review:
     types: [submitted]
   workflow_dispatch:
@@ -71,14 +71,12 @@ jobs:
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: 'pnpm'
+          cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --prod false --frozen-lockfile
@@ -96,6 +94,9 @@ jobs:
             './packages/create-ripple' \
             './packages/prettier-plugin' \
             './packages/ripple' \
+            './packages/adapter' \
+            './packages/adapter-node' \
+            './packages/adapter-bun' \
             './packages/rollup-plugin' \
             './packages/vite-plugin' \
             './packages/cli' \

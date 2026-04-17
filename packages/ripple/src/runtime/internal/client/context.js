@@ -7,10 +7,10 @@ import { active_component } from './runtime.js';
  */
 export class Context {
 	/**
-	 * @param {T} initial_value
+	 * @param {T} [initial_value]
 	 */
 	constructor(initial_value) {
-		/** @type {T} */
+		/** @type {T | undefined} */
 		this._v = initial_value;
 	}
 
@@ -57,4 +57,12 @@ export class Context {
 
 		current_context.set(context, value);
 	}
+}
+
+/**
+ * @template T
+ * @param {T} [initial_value]
+ */
+export function context(initial_value) {
+	return new Context(initial_value);
 }

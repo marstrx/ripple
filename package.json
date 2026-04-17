@@ -5,6 +5,7 @@
   "description": "",
   "author": "Dominic Gannaway",
   "license": "MIT",
+  "packageManager": "pnpm@10.18.2",
   "engines": {
     "node": ">=20.0.0",
     "pnpm": ">=10.18.2",
@@ -12,27 +13,37 @@
   },
   "engineStrict": true,
   "scripts": {
+    "prepare": "rulesync generate || true",
+    "rules:generate": "rulesync generate",
+    "rules:check": "rulesync generate --check",
     "test": "vitest run",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "bump:major": "node scripts/bump-version.js major",
-    "bump:minor": "node scripts/bump-version.js minor",
-    "bump:patch": "node scripts/bump-version.js patch",
-    "bump:editors:major": "node scripts/bump-version.js major editors",
-    "bump:editors:minor": "node scripts/bump-version.js minor editors",
-    "bump:editors:patch": "node scripts/bump-version.js patch editors",
+    "changeset": "changeset",
+    "changeset:version": "changeset version",
+    "changeset:publish": "changeset publish",
     "regenerate-textmate": "node scripts/regenerate-textmate.js",
-    "copy-tree-sitter-queries": "cp packages/tree-sitter/queries/*.scm packages/zed-plugin/languages/ripple && cp packages/tree-sitter/queries/*.scm packages/nvim-plugin/queries/ripple"
+    "copy-tree-sitter-queries": "node ./scripts/copy-tree-sitter-queries.js",
+    "bench": "node benchmarks/tracked-values.js",
+    "typecheck": "tsc --noEmit -p packages/ripple/tsconfig.typecheck.json && tsc --noEmit -p packages/cli/tsconfig.json && tsc --noEmit -p packages/prettier-plugin/tsconfig.json"
   },
   "devDependencies": {
-    "jsdom": "catalog:default",
-    "prettier": "catalog:default",
+    "@changesets/changelog-github": "catalog:default",
+    "@changesets/cli": "catalog:default",
+    "@types/node": "catalog:default",
+    "@ripple-ts/eslint-plugin": "workspace:*",
     "@ripple-ts/prettier-plugin": "workspace:*",
     "@ripple-ts/vite-plugin": "workspace:*",
-    "@ripple-ts/eslint-plugin": "workspace:*",
     "eslint": "catalog:default",
+    "jsdom": "catalog:default",
+    "linkedom": "catalog:default",
+    "prettier": "catalog:default",
+    "rulesync": "catalog:default",
+    "source-map": "catalog:default",
     "type-fest": "catalog:default",
-    "vitest": "catalog:default"
+    "vitest": "catalog:default",
+    "wait-on": "catalog:default",
+    "typescript": "catalog:default"
   },
   "dependencies": {
     "@types/eslint": "catalog:default"

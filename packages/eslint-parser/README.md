@@ -1,6 +1,11 @@
 # @ripple-ts/eslint-parser
 
-ESLint parser for Ripple (.ripple files). This parser enables ESLint to understand and lint `.ripple` files by leveraging Ripple's built-in compiler.
+[![npm version](https://img.shields.io/npm/v/%40ripple-ts%2Feslint-parser?logo=npm)](https://www.npmjs.com/package/@ripple-ts/eslint-parser)
+[![npm downloads](https://img.shields.io/npm/dm/%40ripple-ts%2Feslint-parser?logo=npm&label=downloads)](https://www.npmjs.com/package/@ripple-ts/eslint-parser)
+
+ESLint parser for Ripple component files. This parser enables ESLint to understand
+and lint `.tsrx` files by default, while also supporting `.ripple` files through
+Ripple's built-in compiler.
 
 ## Installation
 
@@ -25,7 +30,7 @@ import ripplePlugin from '@ripple-ts/eslint-plugin';
 
 export default [
   {
-    files: ['**/*.ripple'],
+    files: ['**/*.{tsrx,ripple}'],
     languageOptions: {
       parser: rippleParser,
     },
@@ -45,7 +50,7 @@ export default [
 {
   "overrides": [
     {
-      "files": ["*.ripple"],
+      "files": ["*.tsrx", "*.ripple"],
       "parser": "@ripple-ts/eslint-parser",
       "plugins": ["ripple"],
       "extends": ["plugin:ripple/recommended"]
@@ -56,12 +61,14 @@ export default [
 
 ## How It Works
 
-This parser uses Ripple's compiler (`ripple/compiler`) to parse `.ripple` files into an ESTree-compatible AST that ESLint can analyze. The Ripple compiler already outputs ESTree-compliant ASTs, making integration straightforward.
+This parser uses Ripple's compiler (`ripple/compiler`) to parse Ripple component
+files into an ESTree-compatible AST that ESLint can analyze. The Ripple compiler
+already outputs ESTree-compliant ASTs, making integration straightforward.
 
 The parser:
 
 1. Loads the Ripple compiler
-2. Parses the `.ripple` source code
+2. Parses the component source code (`.tsrx` or `.ripple`)
 3. Returns the ESTree AST to ESLint
 4. Allows ESLint rules to analyze Ripple-specific patterns
 
@@ -70,15 +77,15 @@ The parser:
 The parser supports all Ripple syntax including:
 
 - `component` declarations
-- `track()` reactive values
+- `track()` reactive values (imported from `ripple`)
 - `@` unboxing operator
-- `#[]` and `#{}` reactive collections
+- Reactive collections (`RippleArray`, `RippleObject`, etc.)
 - JSX-like templating inside components
 - All standard JavaScript/TypeScript syntax
 
 ## Example
 
-Given a `.ripple` file:
+Given a `.tsrx` file:
 
 ```ripple
 import { track } from 'ripple';
@@ -93,7 +100,8 @@ export component Counter() {
 }
 ```
 
-The parser will successfully parse this and allow ESLint rules (like those from `@ripple-ts/eslint-plugin`) to check for:
+The parser will successfully parse this and allow ESLint rules (like those from
+`@ripple-ts/eslint-plugin`) to check for:
 
 - Track calls at module scope
 - Missing @ operators
@@ -102,15 +110,19 @@ The parser will successfully parse this and allow ESLint rules (like those from 
 
 ## Limitations
 
-- The parser requires Node.js runtime as it uses `require()` to load the Ripple compiler
+- The parser requires Node.js runtime as it uses `require()` to load the Ripple
+  compiler
 - Browser-based linting is not currently supported
 
 ## Related Packages
 
-- [@ripple-ts/eslint-plugin](https://www.npmjs.com/package/@ripple-ts/eslint-plugin) - ESLint rules for Ripple
+- [@ripple-ts/eslint-plugin](https://www.npmjs.com/package/@ripple-ts/eslint-plugin) -
+  ESLint rules for Ripple
 - [ripple](https://ripplejs.com) - The Ripple framework
-- [@ripple-ts/vite-plugin](https://www.npmjs.com/package/@ripple-ts/vite-plugin) - Vite plugin for Ripple
-- [@ripple-ts/prettier-plugin](https://www.npmjs.com/package/@ripple-ts/prettier-plugin) - Prettier plugin for Ripple
+- [@ripple-ts/vite-plugin](https://www.npmjs.com/package/@ripple-ts/vite-plugin) -
+  Vite plugin for Ripple
+- [@ripple-ts/prettier-plugin](https://www.npmjs.com/package/@ripple-ts/prettier-plugin) -
+  Prettier plugin for Ripple
 
 ## License
 

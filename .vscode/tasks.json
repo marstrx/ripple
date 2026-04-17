@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "wait-for-vite",
+      "type": "process",
+      "command": "pnpm",
+      "args": ["exec", "wait-on", "tcp:5173", "-d", "0"],
+      "problemMatcher": []
+    },
+    {
+      "label": "delete-client-chrome-debug-profile",
+      "type": "shell",
+      "command": "rm -rf .vscode/chrome-client-debug-profile"
+    },
+    {
+      "label": "client-runtime-prelaunch",
+      "dependsOn": ["delete-client-chrome-debug-profile", "wait-for-vite"],
+      "dependsOrder": "parallel"
+    }
+  ]
+}

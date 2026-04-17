@@ -1,8 +1,12 @@
 # @ripple-ts/cli
 
+[![npm version](https://img.shields.io/npm/v/%40ripple-ts%2Fcli?logo=npm)](https://www.npmjs.com/package/@ripple-ts/cli)
+[![npm downloads](https://img.shields.io/npm/dm/%40ripple-ts%2Fcli?logo=npm&label=downloads)](https://www.npmjs.com/package/@ripple-ts/cli)
+
 Interactive CLI tool for creating and managing Ripple applications.
 
-To create a Ripple app with simpler syntax, you can also use `create-ripple` package.
+To create a Ripple app with simpler syntax, you can also use `create-ripple`
+package.
 
 ## Installation
 
@@ -27,8 +31,10 @@ npx @ripple-ts/cli create
 Or use with arguments:
 
 - `project-name`: Optional. Name of the project to create
-- `-p, --package-manager <pm>`: Package manager to use - npm, yarn, pnpm (default: npm)
-- `--template <template>`: Choose a predefined template (default and currently only option: basic)
+- `-p, --package-manager <pm>`: Package manager to use - npm, yarn, pnpm (default:
+  npm)
+- `--template <template>`: Choose a predefined template (default and currently
+  only option: basic)
 - `--yes` or `-y`: Skip all prompts and use defaults
 - `--no-git`: Skip initializing a Git repository
 

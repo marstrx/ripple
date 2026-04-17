@@ -1,12 +1,12 @@
 /** @import { Block } from '#client' */
 
 import { destroy_block, ref } from './blocks.js';
-import { REF_PROP } from './constants.js';
+import { DESTROYED, REF_PROP } from './constants.js';
 import {
 	get_descriptors,
 	get_own_property_symbols,
 	get_prototype_of,
-	is_tracked_object,
+	is_ripple_object,
 } from './utils.js';
 import { event } from './events.js';
 import { get_attribute_event_name, is_event_attribute } from '../../../utils/events.js';
@@ -22,9 +22,7 @@ import { normalize_css_property_name } from '../../../utils/normalize_css_proper
 export function set_text(text, value) {
 	// For objects, we apply string coercion
 	var str = value == null ? '' : typeof value === 'object' ? value + '' : value;
-	// @ts-expect-error
 	if (str !== (text.__t ??= text.nodeValue)) {
-		// @ts-expect-error
 		text.__t = str;
 		text.nodeValue = str + '';
 	}
@@ -183,12 +181,16 @@ export function set_class(dom, value, hash, is_html = true) {
 }
 
 /**
- * @param {HTMLInputElement | HTMLProgressElement} element
+ * @param {HTMLInputElement | HTMLProgressElement | HTMLOptionElement} element
  * @param {any} value
  * @returns {void}
  */
 export function set_value(element, value) {
 	var attributes = (element.__attributes ??= {});
+
+	if (element.nodeName === 'OPTION') {
+		/** @type {HTMLOptionElement & { __value?: any }} */ (element).__value = value;
+	}
 
 	if (
 		attributes.value ===
@@ -254,6 +256,9 @@ export function apply_element_spread(element, fn) {
 	/** @type {Record<string | symbol, (() => void) | undefined>} */
 	var remove_listeners = {};
 
+	/** @type {Record<symbol, any>} */
+	var prev_symbols = {};
+
 	return () => {
 		var next = fn();
 
@@ -264,18 +269,27 @@ export function apply_element_spread(element, fn) {
 			}
 		}
 
+		/** @type {Record<symbol, any>} */
+		var current_symbols = {};
+
 		for (const symbol of get_own_property_symbols(next)) {
 			var ref_fn = next[symbol];
+			current_symbols[symbol] = ref_fn;
 
-			if (symbol.description === REF_PROP && (!(symbol in prev) || ref_fn !== prev[symbol])) {
-				if (effects[symbol]) {
+			if (
+				symbol.description === REF_PROP &&
+				(!(symbol in prev_symbols) ||
+					ref_fn !== prev_symbols[symbol] ||
+					(effects[symbol] && (effects[symbol].f & DESTROYED) !== 0))
+			) {
+				if (effects[symbol] && (effects[symbol].f & DESTROYED) === 0) {
 					destroy_block(effects[symbol]);
 				}
 				effects[symbol] = ref(element, () => ref_fn);
 			}
-
-			next[symbol] = ref_fn;
 		}
+
+		prev_symbols = current_symbols;
 
 		for (let key in remove_listeners) {
 			// Remove event listeners that are no longer present
@@ -300,7 +314,7 @@ export function apply_element_spread(element, fn) {
 			if (key === 'children') continue;
 
 			let value = next[key];
-			if (is_tracked_object(value)) {
+			if (is_ripple_object(value)) {
 				value = get(value);
 			}
 			current[key] = value;

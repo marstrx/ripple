@@ -2,23 +2,50 @@
 
 import { destroy_block, root } from './internal/client/blocks.js';
 import { handle_root_events } from './internal/client/events.js';
-import { init_operations } from './internal/client/operations.js';
+import {
+	get_first_child,
+	get_next_sibling,
+	init_operations,
+} from './internal/client/operations.js';
 import { active_block } from './internal/client/runtime.js';
 import { create_anchor } from './internal/client/utils.js';
 import { remove_ssr_css } from './internal/client/css.js';
+import {
+	hydrate_next,
+	hydrate_node,
+	hydrating,
+	set_hydrate_node,
+	set_hydrating,
+} from './internal/client/hydration.js';
+import { COMMENT_NODE, HYDRATION_START } from '../constants.js';
 
 // Re-export JSX runtime functions for jsxImportSource: "ripple"
 export { jsx, jsxs, Fragment } from '../jsx-runtime.js';
+export {
+	UNINITIALIZED,
+	DERIVED_UPDATED,
+	SUSPENSE_PENDING,
+	SUSPENSE_REJECTED,
+} from './internal/client/constants.js';
+
+/**
+ * @returns {CompatOptions | undefined}
+ */
+function get_default_compat() {
+	return /** @type {typeof globalThis & { __RIPPLE_COMPAT__?: CompatOptions }} */ (globalThis)
+		.__RIPPLE_COMPAT__;
+}
 
 /**
  * @param {(anchor: Node, props: Record<string, any>, active_block: Block | null) => void} component
- * @param {{ props?: Record<string, any>, target: HTMLElement, compat?: CompatOptions }} options
+ * @param {{ props?: Record<string, any>, target: HTMLElement }} options
  * @returns {() => void}
  */
 export function mount(component, options) {
 	init_operations();
 	remove_ssr_css();
 
+	const compat = get_default_compat();
 	const props = options.props || {};
 	const target = options.target;
 	const anchor = create_anchor();
@@ -34,7 +61,54 @@ export function mount(component, options) {
 
 	const _root = root(() => {
 		component(anchor, props, active_block);
-	}, options.compat);
+	}, compat);
+
+	return () => {
+		cleanup_events();
+		destroy_block(_root);
+	};
+}
+
+/**
+ * @param {(anchor: Node, props: Record<string, any>, active_block: Block | null) => void} component
+ * @param {{ props?: Record<string, any>, target: HTMLElement }} options
+ * @returns {() => void}
+ */
+export function hydrate(component, options) {
+	init_operations();
+	remove_ssr_css();
+
+	const compat = get_default_compat();
+	const props = options.props || {};
+	const target = options.target;
+	const was_hydrating = hydrating;
+	const previous_hydrate_node = hydrate_node;
+	let anchor = get_first_child(target);
+
+	const cleanup_events = handle_root_events(target);
+	let _root;
+
+	try {
+		while (
+			anchor &&
+			(anchor.nodeType !== COMMENT_NODE || /** @type {Comment} */ (anchor).data !== HYDRATION_START)
+		) {
+			anchor = get_next_sibling(anchor);
+		}
+
+		set_hydrating(true);
+		set_hydrate_node(/** @type {Comment} */ (anchor));
+		hydrate_next();
+
+		_root = root(() => {
+			component(/** @type {Comment} */ (anchor), props, active_block);
+		}, compat);
+	} catch (e) {
+		throw e;
+	} finally {
+		set_hydrating(was_hydrating);
+		set_hydrate_node(previous_hydrate_node, true);
+	}
 
 	return () => {
 		cleanup_events();
@@ -47,24 +121,26 @@ export { Context } from './internal/client/context.js';
 export {
 	flush_sync as flushSync,
 	track,
-	track_split as trackSplit,
+	track_async as trackAsync,
 	untrack,
 	tick,
+	is_tracked_pending as trackPending,
+	peek_tracked as peek,
 } from './internal/client/runtime.js';
 
-export { TrackedArray } from './array.js';
+export { RippleArray } from './array.js';
 
-export { TrackedObject } from './object.js';
+export { RippleObject } from './object.js';
 
-export { TrackedSet } from './set.js';
+export { RippleSet } from './set.js';
 
-export { TrackedMap } from './map.js';
+export { RippleMap } from './map.js';
 
-export { TrackedDate } from './date.js';
+export { RippleDate } from './date.js';
 
-export { TrackedURL } from './url.js';
+export { RippleURL } from './url.js';
 
-export { TrackedURLSearchParams } from './url-search-params.js';
+export { RippleURLSearchParams } from './url-search-params.js';
 
 export { createSubscriber } from './create-subscriber.js';
 

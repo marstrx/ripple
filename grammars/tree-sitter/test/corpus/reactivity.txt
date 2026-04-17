@@ -1,0 +1,30 @@
+==================
+Ripple Server/Style Member Expressions
+==================
+
+const serverData = #server.data;
+const styleClass = #style.button;
+const styleToken = #style['button'];
+
+---
+
+(program
+  (variable_declaration
+    (variable_declarator
+      name: (identifier)
+      (initializer
+        (server_member_expression
+          property: (identifier)))))
+  (variable_declaration
+    (variable_declarator
+      name: (identifier)
+      (initializer
+        (style_member_expression
+          property: (identifier)))))
+  (variable_declaration
+    (variable_declarator
+      name: (identifier)
+      (initializer
+        (style_subscript_expression
+          index: (string))))))
+

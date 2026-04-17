@@ -1,0 +1,36 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.2/schema.json",
+  "changelog": ["@changesets/changelog-github", { "repo": "Ripple-TS/ripple" }],
+  "commit": false,
+  "fixed": [
+    [
+      "ripple",
+      "@ripple-ts/cli",
+      "@ripple-ts/compat-react",
+      "create-ripple",
+      "@ripple-ts/eslint-parser",
+      "@ripple-ts/eslint-plugin",
+      "@ripple-ts/language-server",
+      "@ripple-ts/prettier-plugin",
+      "@ripple-ts/adapter",
+      "@ripple-ts/adapter-node",
+      "@ripple-ts/adapter-bun",
+      "@ripple-ts/adapter-vercel",
+      "@ripple-ts/rollup-plugin",
+      "@ripple-ts/typescript-plugin",
+      "@ripple-ts/vite-plugin"
+    ]
+  ],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@ripple-ts/playground",
+    "@ripple-ts/tree-sitter",
+    "@ripple-ts/nvim-plugin",
+    "@ripple-ts/intellij-plugin",
+    "@ripple-ts/sublime-text-plugin",
+    "@ripple-ts/zed-plugin"
+  ]
+}

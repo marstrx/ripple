@@ -3,18 +3,26 @@
   "description": "Vite plugin for Ripple",
   "license": "MIT",
   "author": "Dominic Gannaway",
-  "version": "0.2.198",
+  "version": "0.3.13",
   "type": "module",
   "module": "src/index.js",
   "main": "src/index.js",
+  "bin": {
+    "ripple-preview": "src/bin/preview.js"
+  },
   "exports": {
     ".": {
       "types": "./types/index.d.ts",
       "import": "./src/index.js",
       "default": "./src/index.js"
+    },
+    "./production": {
+      "import": "./src/server/production.js",
+      "default": "./src/server/production.js",
+      "types": "./types/production.d.ts"
     }
   },
-  "homepage": "https://ripplejs.com",
+  "homepage": "https://ripple-ts.com",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Ripple-TS/ripple.git",
@@ -23,9 +31,16 @@
   "bugs": {
     "url": "https://github.com/Ripple-TS/ripple/issues"
   },
+  "dependencies": {
+    "@ripple-ts/adapter": "workspace:*"
+  },
   "devDependencies": {
+    "@types/node": "catalog:default",
     "ripple": "workspace:*",
     "type-fest": "catalog:default",
     "vite": "catalog:default"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

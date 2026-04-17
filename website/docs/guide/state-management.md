@@ -26,7 +26,7 @@ Example with tracked / reactive contents:
 <Code>
 
 ```ripple
-import { track, Context } from 'ripple'
+import { Context, track } from 'ripple';
 
 // create context with an empty object
 const context  = new Context({});
@@ -36,28 +36,25 @@ export component App() {
   // get reference to the object
   const obj = context.get();
   // set your reactive value
-  obj.count = track(0);
+  let &[count, countTracked] = track(0);
+  obj.count = countTracked;
 
   // create another tracked variable
-  const count2 = track(0);
+  let &[count2, count2Tracked] = track(0);
   // context2 now contains a tracked variable
-  context2.set(count2);
+  context2.set(count2Tracked);
 
-  <button onClick={() => { obj.@count++; @count2++ }}>
+  <button onClick={() => { count++; count2++ }}>
     {'Click Me'}
   </button>
 
   // context's reactive property count gets updated
-  <pre>{'Context: '}{context.get().@count}</pre>
-  <pre>{'Context2: '}{@count2}</pre>
+  <pre>{'Context: '}{count}</pre>
+  <pre>{'Context2: '}{count2}</pre>
 }
 ```
 
 </Code>
-
-::: info
-`@(context2.get())` usage with `@()` wrapping syntax will be enabled in the near future
-:::
 
 Passing data between components:
 

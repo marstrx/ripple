@@ -8,10 +8,12 @@ import {
 	DESTROYED,
 	EFFECT_BLOCK,
 	PAUSED,
+	PRE_EFFECT_BLOCK,
 	RENDER_BLOCK,
 	ROOT_BLOCK,
 	TRY_BLOCK,
 	HEAD_BLOCK,
+	DIRECT_CHILD_BLOCK,
 } from './constants.js';
 import { next_sibling } from './operations.js';
 import { apply_element_spread } from './render.js';
@@ -25,7 +27,6 @@ import {
 	run_teardown,
 	schedule_update,
 } from './runtime.js';
-import { suspend } from './try.js';
 
 /**
  * @param {Function} fn
@@ -60,6 +61,14 @@ export function effect(fn) {
 }
 
 /**
+ * Creates a pre-effect block that runs eagerly before render blocks in the flush cycle.
+ * @param {Function} fn
+ */
+export function pre_effect(fn) {
+	return block(PRE_EFFECT_BLOCK, fn);
+}
+
+/**
  * @param {Function} fn
  * @param {any} [state]
  * @param {number} [flags]
@@ -84,17 +93,6 @@ export function render_spread(element, fn, flags = 0) {
  */
 export function branch(fn, flags = 0, state = null) {
 	return block(BRANCH_BLOCK | flags, fn, state);
-}
-
-/**
- * @param {() => any} fn
- */
-export function async(fn) {
-	return block(BRANCH_BLOCK, async () => {
-		const unsuspend = suspend();
-		await fn();
-		unsuspend();
-	});
 }
 
 /**
@@ -163,6 +161,15 @@ export function root(fn, compat) {
  */
 export function create_try_block(fn, state) {
 	return block(TRY_BLOCK, fn, state);
+}
+
+/**
+ * @param {() => void} fn
+ * @param {number} [flags]
+ * @param {any} [state]
+ */
+export function boundary_fn_running_block(fn, flags = 0, state = null) {
+	return branch(fn, DIRECT_CHILD_BLOCK | flags, state);
 }
 
 /**
@@ -359,6 +366,45 @@ export function remove_block_dom(node, end) {
 }
 
 /**
+ * Moves DOM nodes from a block to a target element (typically a DocumentFragment).
+ * If the block has state (start/end), moves that range.
+ * If not, recursively moves content from child branch blocks.
+ * @param {Block} block - The block to move content from
+ * @param {Element | DocumentFragment} target - Where to move the nodes
+ * @returns {boolean} - True if content was moved
+ */
+export function move_block(block, target) {
+	var f = block.f;
+
+	// Only BRANCH_BLOCKs (excluding TRY_BLOCK) can have DOM state to move
+	if ((f & BRANCH_BLOCK) !== 0 && (f & TRY_BLOCK) === 0) {
+		var s = block.s;
+		if (s !== null && s.start !== null) {
+			var node = s.start;
+			var end = s.end;
+
+			while (node !== null) {
+				var next = node === end ? null : next_sibling(node);
+				target.append(node);
+				node = next;
+			}
+			return true;
+		}
+	}
+
+	// If this block has no DOM, try moving from child branch blocks
+	var moved = false;
+	var child = block.first;
+	while (child !== null) {
+		if (move_block(child, target)) {
+			moved = true;
+		}
+		child = child.next;
+	}
+	return moved;
+}
+
+/**
  * @param {Block} block
  * @param {boolean} [remove_dom]
  */
@@ -390,5 +436,5 @@ export function destroy_block(block, remove_dom = true) {
 		unlink_block(block);
 	}
 
-	block.fn = block.s = block.d = block.p = block.d = block.co = block.t = null;
+	block.fn = block.s = block.d = block.p = block.co = block.t = null;
 }

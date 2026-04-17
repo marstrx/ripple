@@ -1,6 +1,6 @@
 export {
 	first_child as child,
-	child_frag,
+	first_child_frag,
 	next_sibling as sibling,
 	document,
 	create_text,
@@ -17,8 +17,25 @@ export {
 	set_selected,
 } from './render.js';
 
-export { render, render_spread, async, ref, branch, destroy_block, root } from './blocks.js';
+export {
+	render,
+	render_spread,
+	ref,
+	branch,
+	destroy_block,
+	move_block,
+	root,
+	user_effect as effect,
+	resume_block,
+	is_destroyed,
+} from './blocks.js';
 
+export {
+	UNINITIALIZED,
+	DERIVED_UPDATED,
+	SUSPENSE_PENDING,
+	SUSPENSE_REJECTED,
+} from './constants.js';
 export { event, render_event, delegate } from './events.js';
 
 export {
@@ -30,7 +47,6 @@ export {
 	get_tracked,
 	get_derived,
 	set,
-	async_computed,
 	tracked,
 	spread_props,
 	computed_property,
@@ -41,6 +57,10 @@ export {
 	update_pre,
 	update_property,
 	update_pre_property,
+	track,
+	track_async,
+	is_tracked_pending,
+	peek_tracked,
 	push_component,
 	pop_component,
 	untrack,
@@ -48,12 +68,13 @@ export {
 	fallback,
 	exclude_from_object,
 	derived,
-	maybe_tracked,
 	tick,
 	proxy_props,
 	with_block,
 	with_ns,
 	handle_error,
+	queue_post_block_flush_callback,
+	schedule_update,
 } from './runtime.js';
 
 export { composite } from './composite.js';
@@ -62,19 +83,31 @@ export { for_block as for, for_block_keyed as for_keyed } from './for.js';
 
 export { if_block as if } from './if.js';
 
-export { try_block as try, aborted, suspend } from './try.js';
+export { try_block as try, get_pending_boundary } from './try.js';
 
 export { switch_block as switch } from './switch.js';
 
-export { template, append } from './template.js';
+export { template, append, text } from './template.js';
 
-export { tracked_array } from '../../array.js';
+export { array_slice } from './utils.js';
 
-export { tracked_object } from '../../object.js';
+export { ripple_array } from '../../array.js';
 
-export { tracked_map } from '../../map.js';
+export { ripple_object } from '../../object.js';
 
-export { tracked_set } from '../../set.js';
+export { ripple_map } from '../../map.js';
+
+export { ripple_set } from '../../set.js';
+
+export { ripple_date } from '../../date.js';
+
+export { ripple_url } from '../../url.js';
+
+export { ripple_url_search_params } from '../../url-search-params.js';
+
+export { media_query } from '../../media-query.js';
+
+export { context } from './context.js';
 
 export { head } from './head.js';
 
@@ -82,8 +115,16 @@ export { script } from './script.js';
 
 export { html } from './html.js';
 
+export { expression } from './expression.js';
+
 export { rpc } from './rpc.js';
 
 export { tsx_compat } from './compat.js';
 
-export { TRY_BLOCK } from './constants.js';
+export { TRY_BLOCK, HMR } from './constants.js';
+
+export { hmr } from './hmr.js';
+
+export { pop, next } from './hydration.js';
+
+export { ripple_element, normalize_children } from '../../element.js';

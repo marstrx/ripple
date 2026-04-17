@@ -3,6 +3,7 @@
  @import * as AST from 'estree';
  @import { CodeMapping } from 'ripple/compiler';
  @import { CodeMapping as VolarCodeMapping } from '@volar/language-core';
+ @import { RawSourceMap } from 'source-map';
  */
 
 /**
@@ -36,6 +37,12 @@ export const mapping_data = {
 /** @type {Partial<VolarCodeMapping['data']>} */
 export const mapping_data_verify_only = {
 	verification: true,
+};
+
+/** @type {Partial<VolarCodeMapping['data']>} */
+export const mapping_data_verify_complete = {
+	verification: true,
+	completion: true,
 };
 
 /**
@@ -72,7 +79,7 @@ export const offset_to_line_col = (offset, line_offsets) => {
 /**
  * Build a source-to-generated position lookup map from an esrap source map
  * Applies post-processing adjustments during map building for efficiency
- * @param {object} source_map - The source map object from esrap (v3 format)
+ * @param {RawSourceMap} source_map - The source map object from esrap (v3 format)
  * @param {PostProcessingChanges} post_processing_changes - Optional post-processing changes to apply
  * @param {LineOffsets} line_offsets - Pre-computed line offsets array
  * @param {string} generated_code - The final generated code (after post-processing)
@@ -90,7 +97,6 @@ export function build_src_to_gen_map(
 	const reverse_map = new Map();
 
 	// Decode the VLQ-encoded mappings string
-	// @ts-ignore
 	const decoded = decode(source_map.mappings);
 
 	/**
@@ -204,6 +210,25 @@ export function build_src_to_gen_map(
 }
 
 /**
+ * Look up generated position for a given source position if it exists
+ * @param {number} src_line - 1-based line number in source
+ * @param {number} src_column - 0-based column number in source
+ * @param {CodeToGeneratedMap} src_to_gen_map - Lookup map
+ * @returns {CodePosition | Error} Generated position
+ */
+function maybe_get_generated_position(src_line, src_column, src_to_gen_map) {
+	const key = `${src_line}:${src_column}`;
+	const positions = src_to_gen_map.get(key);
+
+	if (!positions || positions.length === 0) {
+		return new Error(`No source map entry for position "${src_line}:${src_column}"`);
+	}
+
+	// If multiple generated positions map to same source, return the first
+	return positions[0];
+}
+
+/**
  * Look up generated position for a given source position
  * @param {number} src_line - 1-based line number in source
  * @param {number} src_column - 0-based column number in source
@@ -211,16 +236,14 @@ export function build_src_to_gen_map(
  * @returns {CodePosition} Generated position
  */
 export function get_generated_position(src_line, src_column, src_to_gen_map) {
-	const key = `${src_line}:${src_column}`;
-	const positions = src_to_gen_map.get(key);
+	const maybe_position = maybe_get_generated_position(src_line, src_column, src_to_gen_map);
 
-	if (!positions || positions.length === 0) {
+	if (maybe_position instanceof Error) {
 		// No mapping found in source map - this shouldn't happen since all tokens should have mappings
-		throw new Error(`No source map entry for position "${src_line}:${src_column}"`);
+		throw maybe_position;
 	}
 
-	// If multiple generated positions map to same source, return the first
-	return positions[0];
+	return maybe_position;
 }
 
 /**
@@ -255,7 +278,54 @@ export function build_line_offsets(text) {
 }
 
 /**
- * @param {AST.Node} node
+ * @param {AST.Node | AST.NodeWithLocation} node
+ * @param {CodeToGeneratedMap} src_to_gen_map
+ * @param {number[]} gen_line_offsets
+ * @param {Partial<VolarCodeMapping['data']>} [filtered_data]
+ * @param {number} [src_max_len]
+ * @param {number} [gen_max_len]
+ * @returns {CodeMapping | Error}
+ */
+function maybe_get_mapping_from_node(
+	node,
+	src_to_gen_map,
+	gen_line_offsets,
+	filtered_data,
+	src_max_len,
+	gen_max_len,
+) {
+	const src_start_offset = /** @type {number} */ (node.start);
+	const src_end_offset = /** @type {number} */ (node.end);
+	const src_length = src_max_len || src_end_offset - src_start_offset;
+	const loc = /** @type {AST.SourceLocation} */ (node.loc);
+
+	const gen_loc = maybe_get_generated_position(loc.start.line, loc.start.column, src_to_gen_map);
+	if (gen_loc instanceof Error) {
+		return gen_loc;
+	}
+	const gen_start_offset = loc_to_offset(gen_loc.line, gen_loc.column, gen_line_offsets);
+
+	const gen_end_loc = maybe_get_generated_position(loc.end.line, loc.end.column, src_to_gen_map);
+	if (gen_end_loc instanceof Error) {
+		return gen_end_loc;
+	}
+	const gen_end_offset = loc_to_offset(gen_end_loc.line, gen_end_loc.column, gen_line_offsets);
+
+	const gen_length = gen_max_len || gen_end_offset - gen_start_offset;
+	return {
+		sourceOffsets: [src_start_offset],
+		lengths: [src_length],
+		generatedOffsets: [gen_start_offset],
+		generatedLengths: [gen_length],
+		data: {
+			...(filtered_data || mapping_data),
+			customData: {},
+		},
+	};
+}
+
+/**
+ * @param {AST.Node | AST.NodeWithLocation} node
  * @param {CodeToGeneratedMap} src_to_gen_map
  * @param {number[]} gen_line_offsets
  * @param {Partial<VolarCodeMapping['data']>} [filtered_data]
@@ -271,26 +341,18 @@ export function get_mapping_from_node(
 	src_max_len,
 	gen_max_len,
 ) {
-	const src_start_offset = /** @type {number} */ (node.start);
-	const src_end_offset = /** @type {number} */ (node.end);
-	const src_length = src_max_len || src_end_offset - src_start_offset;
-	const loc = /** @type {AST.SourceLocation} */ (node.loc);
+	const mapping = maybe_get_mapping_from_node(
+		node,
+		src_to_gen_map,
+		gen_line_offsets,
+		filtered_data,
+		src_max_len,
+		gen_max_len,
+	);
 
-	const gen_loc = get_generated_position(loc.start.line, loc.start.column, src_to_gen_map);
-	const gen_start_offset = loc_to_offset(gen_loc.line, gen_loc.column, gen_line_offsets);
-	const gen_end_loc = get_generated_position(loc.end.line, loc.end.column, src_to_gen_map);
-	const gen_end_offset = loc_to_offset(gen_end_loc.line, gen_end_loc.column, gen_line_offsets);
-	const gen_length = gen_max_len || gen_end_offset - gen_start_offset;
-	return {
-		sourceOffsets: [src_start_offset],
-		lengths: [src_length],
-		generatedOffsets: [gen_start_offset],
-		generatedLengths: [gen_length],
-		data: {
-			...(filtered_data || mapping_data),
-			customData: {
-				generatedLengths: [gen_length],
-			},
-		},
-	};
+	if (mapping instanceof Error) {
+		throw mapping;
+	}
+
+	return mapping;
 }

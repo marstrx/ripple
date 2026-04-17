@@ -3,7 +3,7 @@
 /** @typedef {0 | 1} Direction */
 
 import { walk } from 'zimmerframe';
-import { is_element_dom_element } from '../../utils.js';
+import { is_element_dom_element, is_element_dynamic } from '../../utils.js';
 
 const regex_backslash_and_following_character = /\\(.)/g;
 /** @type {Direction} */
@@ -236,18 +236,6 @@ function apply_selector(relative_selectors, rule, element, direction) {
 								selector: selector,
 							});
 						}
-
-						// Also store in top_scoped_classes if standalone selector
-						if (
-							is_standalone_class_selector(relative_selector, selector) &&
-							!top_scoped_classes.has(name)
-						) {
-							top_scoped_classes.set(name, {
-								start: selector.start,
-								end: selector.end,
-								selector: selector,
-							});
-						}
 					}
 				}
 			}
@@ -318,12 +306,20 @@ function get_descendant_elements(node, adjacent_only) {
 			}
 		}
 
-		// For template nodes and text interpolations
+		// For template nodes and interpolation expressions
 		if (
-			/** @type {AST.TextNode} */ (current_node).expression &&
-			typeof (/** @type {AST.TextNode} */ (current_node).expression) === 'object'
+			(current_node.type === 'RippleExpression' ||
+				current_node.type === 'Text' ||
+				current_node.type === 'Html') &&
+			/** @type {AST.RippleExpression | AST.Html | AST.TextNode} */ (current_node).expression &&
+			typeof (
+				/** @type {AST.RippleExpression | AST.Html | AST.TextNode} */ (current_node).expression
+			) === 'object'
 		) {
-			visit(/** @type {AST.TextNode} */ (current_node).expression, depth + 1);
+			visit(
+				/** @type {AST.RippleExpression | AST.Html | AST.TextNode} */ (current_node).expression,
+				depth + 1,
+			);
 		}
 	}
 
@@ -350,7 +346,7 @@ function can_render_dynamic_content(element, check_classes = false) {
 
 	// Either a dynamic element or component (only can tell at runtime)
 	// But dynamic elements should return false ideally
-	if (/** @type {AST.Element} */ (element).id.tracked) {
+	if (is_element_dynamic(/** @type {AST.Element} */ (element))) {
 		return true;
 	}
 
@@ -421,7 +417,7 @@ function get_possible_element_siblings(node, direction, adjacent_only) {
 		// Stop at non-whitespace text nodes for adjacent selectors
 		else if (
 			adjacent_only &&
-			sibling.type === 'Text' &&
+			(sibling.type === 'RippleExpression' || sibling.type === 'Text') &&
 			sibling.expression.type === 'Literal' &&
 			typeof sibling.expression.value === 'string' &&
 			sibling.expression.value.trim()
@@ -932,7 +928,9 @@ function relative_selector_might_apply_to_node(relative_selector, rule, element,
 			}
 
 			case 'AttributeSelector': {
-				const whitelisted = whitelist_attribute_selector.get(element.id.name.toLowerCase());
+				const whitelisted = whitelist_attribute_selector.get(
+					/** @type {AST.Identifier} */ (element.id).name.toLowerCase(),
+				);
 				if (
 					!whitelisted?.includes(selector.name.toLowerCase()) &&
 					!attribute_matches(
@@ -1086,6 +1084,31 @@ export function prune_css(css, element, styleClasses, topScopedClasses) {
 
 			if (apply_selector(selectors, rule, element, BACKWARD) || rule_has_animation(rule)) {
 				node.metadata.used = true;
+			}
+
+			// Populate top_scoped_classes for truly standalone class selectors (for #style support).
+			// A class is standalone only when the entire effective selector chain (after resolving
+			// nesting and stripping :global) is a single RelativeSelector with a single ClassSelector.
+			// This prevents classes from compound selectors like `.wrapper .nested` or selectors
+			// inside :global() from being treated as valid #style targets.
+			if (selectors.length === 1) {
+				const sole_selector = selectors[0];
+				if (
+					!sole_selector.metadata.is_global &&
+					!sole_selector.metadata.is_global_like &&
+					sole_selector.selectors.length === 1 &&
+					sole_selector.selectors[0].type === 'ClassSelector'
+				) {
+					const class_selector = sole_selector.selectors[0];
+					const name = class_selector.name.replace(regex_backslash_and_following_character, '$1');
+					if (!top_scoped_classes.has(name)) {
+						top_scoped_classes.set(name, {
+							start: class_selector.start,
+							end: class_selector.end,
+							selector: class_selector,
+						});
+					}
+				}
 			}
 
 			context.next();

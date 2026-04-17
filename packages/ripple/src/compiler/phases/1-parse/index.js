@@ -53,16 +53,6 @@ function DestructuringErrors() {
 }
 
 /**
- * @param {AST.Identifier | ESTreeJSX.JSXIdentifier} node
- * @param {string} name
- */
-function set_tracked_name(node, name) {
-	node.name = name.slice(1);
-	node.metadata ??= { path: [] };
-	node.metadata.source_name = name;
-}
-
-/**
  * Convert JSX node types to regular JavaScript node types
  * @param {ESTreeJSX.JSXIdentifier | ESTreeJSX.JSXMemberExpression | AST.Node} node - The JSX node to convert
  * @returns {AST.Identifier | AST.MemberExpression | AST.Node} The converted node
@@ -109,8 +99,15 @@ function skipWhitespace(parser) {
 	// Update line tracking if whitespace was skipped
 	if (parser.start !== originalStart) {
 		lineInfo = acorn.getLineInfo(parser.input, parser.start);
-		parser.curLine = lineInfo.line;
-		parser.lineStart = parser.start - lineInfo.column;
+		// Only update curLine/lineStart if the tokenizer hasn't already
+		// advanced past this position. When parser.pos > parser.start,
+		// acorn's internal skipSpace() has already processed comments and
+		// whitespace beyond where we stopped, so curLine/lineStart already
+		// reflect a later (correct) position that we must not overwrite.
+		if (parser.pos <= parser.start) {
+			parser.curLine = lineInfo.line;
+			parser.lineStart = parser.start - lineInfo.column;
+		}
 	}
 
 	// After skipping whitespace, update startLoc to reflect our actual position
@@ -177,6 +174,53 @@ function RipplePlugin(config) {
 			}
 
 			/**
+			 * @param {number} position
+			 * @param {string} message
+			 */
+			#report_recoverable_error(position, message) {
+				const start = Math.max(0, Math.min(position, this.input.length));
+				const end = Math.min(this.input.length, start + 1);
+				const start_loc = acorn.getLineInfo(this.input, start);
+				const end_loc = acorn.getLineInfo(this.input, end);
+
+				error(
+					message,
+					this.#filename,
+					/** @type {AST.NodeWithLocation} */ ({
+						start,
+						end,
+						loc: {
+							start: start_loc,
+							end: end_loc,
+						},
+					}),
+					this.#loose ? this.#errors : undefined,
+				);
+			}
+
+			/**
+			 * In loose mode, keep parsing after duplicate declaration diagnostics so
+			 * editor tooling can continue producing AST and mappings.
+			 * @param {number} position
+			 * @param {string | { message?: string }} message
+			 */
+			raiseRecoverable(position, message) {
+				const error_message =
+					typeof message === 'string'
+						? message
+						: typeof message?.message === 'string'
+							? message.message
+							: String(message);
+
+				if (error_message.includes('has already been declared')) {
+					this.#report_recoverable_error(position, error_message);
+					return;
+				}
+
+				return super.raiseRecoverable(position, error_message);
+			}
+
+			/**
 			 * Override to allow single-parameter generic arrow functions without trailing comma.
 			 * By default, @sveltejs/acorn-typescript throws an error for `<T>() => {}` when JSX is enabled
 			 * because it can't disambiguate from JSX. However, the parser still parses it correctly
@@ -221,6 +265,123 @@ function RipplePlugin(config) {
 			}
 
 			/**
+			 * Override parseProperty to support component methods in object literals.
+			 * Handles syntax like `{ component something() { <div /> } }`
+			 * Also supports computed names: `{ component ['something']() { <div /> } }`
+			 * @type {Parse.Parser['parseProperty']}
+			 */
+			parseProperty(isPattern, refDestructuringErrors) {
+				// Check if this is a component method: component name( ... ) { ... }
+				if (!isPattern && this.type === tt.name && this.value === 'component') {
+					// Look ahead to see if this is "component identifier(", "component identifier<", "component [", or "component 'string'"
+					const lookahead = this.input.slice(this.pos).match(/^\s*(?:(\w+)\s*[(<]|\[|['"])/);
+					if (lookahead) {
+						// This is a component method definition
+						const prop = /** @type {AST.Property} */ (this.startNode());
+						const isComputed = lookahead[0].trim().startsWith('[');
+						const isStringLiteral = /^['"]/.test(lookahead[0].trim());
+
+						if (isComputed) {
+							// For computed names, consume 'component'
+							// parse the key, then parse component without name
+							this.next(); // consume 'component'
+							this.next(); // consume '['
+							prop.key = this.parseExpression();
+							this.expect(tt.bracketR);
+							prop.computed = true;
+
+							// Parse component without name (skipName: true)
+							const component_node = this.parseComponent({ skipName: true });
+							/** @type {AST.RippleProperty} */ (prop).value = component_node;
+						} else if (isStringLiteral) {
+							// For string literal names, consume 'component'
+							// parse the string key, then parse component without name
+							this.next(); // consume 'component'
+							prop.key = /** @type {AST.Literal} */ (this.parseExprAtom());
+							prop.computed = false;
+
+							// Parse component without name (skipName: true)
+							const component_node = this.parseComponent({ skipName: true });
+							/** @type {AST.RippleProperty} */ (prop).value = component_node;
+						} else {
+							const component_node = this.parseComponent({ requireName: true });
+
+							prop.key = /** @type {AST.Identifier} */ (component_node.id);
+							/** @type {AST.RippleProperty} */ (prop).value = component_node;
+							prop.computed = false;
+						}
+
+						prop.shorthand = false;
+						prop.method = true;
+						prop.kind = 'init';
+
+						return this.finishNode(prop, 'Property');
+					}
+				}
+
+				return super.parseProperty(isPattern, refDestructuringErrors);
+			}
+
+			/**
+			 * Override parseClassElement to support component methods in classes.
+			 * Handles syntax like `class Foo { component something() { <div /> } }`
+			 * Also supports computed names: `class Foo { component ['something']() { <div /> } }`
+			 * @type {Parse.Parser['parseClassElement']}
+			 */
+			parseClassElement(constructorAllowsSuper) {
+				// Check if this is a component method: component name( ... ) { ... }
+				if (this.type === tt.name && this.value === 'component') {
+					// Look ahead to see if this is "component identifier(",
+					// "component identifier<", "component [", or "component 'string'"
+					const lookahead = this.input.slice(this.pos).match(/^\s*(?:(\w+)\s*[(<]|\[|['"])/);
+					if (lookahead) {
+						// This is a component method definition
+						const node = /** @type {AST.MethodDefinition} */ (this.startNode());
+						const isComputed = lookahead[0].trim().startsWith('[');
+						const isStringLiteral = /^['"]/.test(lookahead[0].trim());
+
+						if (isComputed) {
+							// For computed names, consume 'component'
+							// parse the key, then parse component without name
+							this.next(); // consume 'component'
+							this.next(); // consume '['
+							node.key = this.parseExpression();
+							this.expect(tt.bracketR);
+							node.computed = true;
+
+							// Parse component without name (skipName: true)
+							const component_node = this.parseComponent({ skipName: true });
+							/** @type {AST.RippleMethodDefinition} */ (node).value = component_node;
+						} else if (isStringLiteral) {
+							// For string literal names, consume 'component'
+							// parse the string key, then parse component without name
+							this.next(); // consume 'component'
+							node.key = /** @type {AST.Literal} */ (this.parseExprAtom());
+							node.computed = false;
+
+							// Parse component without name (skipName: true)
+							const component_node = this.parseComponent({ skipName: true });
+							/** @type {AST.RippleMethodDefinition} */ (node).value = component_node;
+						} else {
+							// Use parseComponent which handles consuming 'component', parsing name, params, and body
+							const component_node = this.parseComponent({ requireName: true });
+
+							node.key = /** @type {AST.Identifier} */ (component_node.id);
+							/** @type {AST.RippleMethodDefinition} */ (node).value = component_node;
+							node.computed = false;
+						}
+
+						node.static = false;
+						node.kind = 'method';
+
+						return this.finishNode(node, 'MethodDefinition');
+					}
+				}
+
+				return super.parseClassElement(constructorAllowsSuper);
+			}
+
+			/**
 			 * Override parsePropertyValue to support TypeScript generic methods in object literals.
 			 * By default, acorn-typescript doesn't handle `{ method<T>() {} }` syntax.
 			 * This override checks for type parameters before parsing the method.
@@ -252,7 +413,9 @@ function RipplePlugin(config) {
 						/** @type {AST.Property} */ (prop).method = true;
 						/** @type {AST.Property} */ (prop).kind = 'init';
 						/** @type {AST.Property} */ (prop).value = this.parseMethod(false, false);
-						/** @type {AST.Property} */ (prop).value.typeParameters = typeParameters;
+						/** @type {AST.FunctionExpression} */ (
+							/** @type {AST.Property} */ (prop).value
+						).typeParameters = typeParameters;
 						return;
 					}
 				}
@@ -469,208 +632,39 @@ function RipplePlugin(config) {
 
 				if (code === 35) {
 					// # character
-					// Look ahead to see if this is followed by [ for tuple syntax or 'server' keyword
 					if (this.pos + 1 < this.input.length) {
-						const nextChar = this.input.charCodeAt(this.pos + 1);
-						if (nextChar === 91 || nextChar === 123) {
-							// [ or { character
-							// This is a tuple literal #[ or #{
-							// Consume both # and [ or {
-							++this.pos; // consume #
-							++this.pos; // consume [ or {
-							if (nextChar === 123) {
-								return this.finishToken(tt.braceL, '#{');
-							} else {
-								return this.finishToken(tt.bracketL, '#[');
-							}
+						/** @param {string} value */
+						const startsWith = (value) =>
+							this.input.slice(this.pos, this.pos + value.length) === value;
+						/** @param {number} length */
+						const char_after = (length) =>
+							this.pos + length < this.input.length ? this.input.charCodeAt(this.pos + length) : -1;
+						/** @param {number} ch */
+						const is_ripple_delimiter = (ch) =>
+							ch === 40 || // (
+							ch === 41 || // )
+							ch === 60 || // <
+							ch === 46 || // .
+							ch === 44 || // ,
+							ch === 59 || // ;
+							ch === 91 || // [
+							ch === 93 || // ]
+							ch === 123 || // {
+							ch === 125 || // }
+							ch === 32 || // space
+							ch === 9 || // tab
+							ch === 10 || // newline
+							ch === 13 || // carriage return
+							ch === -1; // EOF
+
+						if (startsWith('#server') && is_ripple_delimiter(char_after(7))) {
+							this.pos += 7;
+							return this.finishToken(tt.name, '#server');
 						}
 
-						// Check if this is #Map or #Set
-						if (this.input.slice(this.pos, this.pos + 4) === '#Map') {
-							const charAfter =
-								this.pos + 4 < this.input.length ? this.input.charCodeAt(this.pos + 4) : -1;
-							if (charAfter === 40 || charAfter === 60) {
-								// ( or < character (for generics like #Map<string, number>)
-								this.pos += 4; // consume '#Map'
-								return this.finishToken(tt.name, '#Map');
-							} else if (this.#loose) {
-								// In loose mode, produce token even without parens (incomplete syntax)
-								this.pos += 4; // consume '#Map'
-								return this.finishToken(tt.name, '#Map');
-							}
-						}
-						if (this.input.slice(this.pos, this.pos + 4) === '#Set') {
-							const charAfter =
-								this.pos + 4 < this.input.length ? this.input.charCodeAt(this.pos + 4) : -1;
-							if (charAfter === 40 || charAfter === 60) {
-								// ( or < character (for generics like #Set<number>)
-								this.pos += 4; // consume '#Set'
-								return this.finishToken(tt.name, '#Set');
-							} else if (this.#loose) {
-								// In loose mode, produce token even without parens (incomplete syntax)
-								this.pos += 4; // consume '#Set'
-								return this.finishToken(tt.name, '#Set');
-							}
-						}
-
-						// Check if this is #server
-						if (this.input.slice(this.pos, this.pos + 7) === '#server') {
-							// Check that next char after 'server' is whitespace, {, . (dot), or EOF
-							const charAfter =
-								this.pos + 7 < this.input.length ? this.input.charCodeAt(this.pos + 7) : -1;
-							if (
-								charAfter === 123 || // {
-								charAfter === 46 || // . (dot)
-								charAfter === 32 || // space
-								charAfter === 9 || // tab
-								charAfter === 10 || // newline
-								charAfter === 13 || // carriage return
-								charAfter === -1 // EOF
-							) {
-								// { or . or whitespace or EOF
-								this.pos += 7; // consume '#server'
-								return this.finishToken(tt.name, '#server');
-							}
-						}
-
-						if (this.input.slice(this.pos, this.pos + 6) === '#style') {
-							// Check that next char after 'style' is . (dot), [, whitespace, or EOF
-							const charAfter =
-								this.pos + 6 < this.input.length ? this.input.charCodeAt(this.pos + 6) : -1;
-							if (
-								charAfter === 46 || // . (dot)
-								charAfter === 91 || // [
-								charAfter === 32 || // space
-								charAfter === 9 || // tab
-								charAfter === 10 || // newline
-								charAfter === 13 || // carriage return
-								charAfter === -1 // EOF
-							) {
-								// { or . or whitespace or EOF
-								this.pos += 6; // consume '#style'
-								return this.finishToken(tt.name, '#style');
-							}
-						}
-
-						// Check if this is an invalid #Identifier pattern
-						// Valid patterns: #[, #{, #Map(, #Map<, #Set(, #Set<, #server, #style
-						// If we see # followed by an uppercase letter that isn't Map or Set, it's an error
-						// In loose mode, allow incomplete identifiers like #M, #Ma, #S, #Se for autocomplete
-						if (nextChar >= 65 && nextChar <= 90) {
-							// A-Z
-							// Extract the identifier name
-							let identEnd = this.pos + 1;
-							while (identEnd < this.input.length) {
-								const ch = this.input.charCodeAt(identEnd);
-								if (
-									(ch >= 65 && ch <= 90) ||
-									(ch >= 97 && ch <= 122) ||
-									(ch >= 48 && ch <= 57) ||
-									ch === 95
-								) {
-									// A-Z, a-z, 0-9, _
-									identEnd++;
-								} else {
-									break;
-								}
-							}
-							const identName = this.input.slice(this.pos + 1, identEnd);
-							if (identName !== 'Map' && identName !== 'Set') {
-								// In loose mode, allow incomplete identifiers (prefixes of Map/Set)
-								// This supports autocomplete scenarios where user is still typing
-								const isIncompleteMap = 'Map'.startsWith(identName);
-								const isIncompleteSet = 'Set'.startsWith(identName);
-
-								if (!this.#loose || (!isIncompleteMap && !isIncompleteSet)) {
-									this.raise(
-										this.pos,
-										`Invalid tracked syntax '#${identName}'. Only #Map and #Set are currently supported using shorthand tracked syntax.`,
-									);
-								} else {
-									// In loose mode with valid prefix, consume the token and return it
-									// This allows the parser to handle incomplete syntax gracefully
-									this.pos = identEnd; // consume '#' + identifier
-									return this.finishToken(tt.name, '#' + identName);
-								}
-							}
-						}
-
-						// In loose mode, handle bare # or # followed by unrecognized characters
-						if (this.#loose) {
-							this.pos++; // consume '#'
-							return this.finishToken(tt.name, '#');
-						}
-					} else if (this.#loose) {
-						// In loose mode, handle bare # at EOF
-						this.pos++; // consume '#'
-						return this.finishToken(tt.name, '#');
-					}
-				}
-				if (code === 64) {
-					// @ character
-					// Look ahead to see if this is followed by a valid identifier character or opening paren
-					if (this.pos + 1 < this.input.length) {
-						const nextChar = this.input.charCodeAt(this.pos + 1);
-
-						// Check if this is @( for unboxing expression syntax
-						if (nextChar === 40) {
-							// ( character
-							this.pos += 2; // skip '@('
-							return this.finishToken(tt.parenL, '@(');
-						}
-
-						// Check if the next character can start an identifier
-						if (
-							(nextChar >= 65 && nextChar <= 90) || // A-Z
-							(nextChar >= 97 && nextChar <= 122) || // a-z
-							nextChar === 95 ||
-							nextChar === 36
-						) {
-							// _ or $
-
-							// Check if we're in an expression context
-							// In JSX expressions, inside parentheses, assignments, etc.
-							// we want to treat @ as an identifier prefix rather than decorator
-							const currentType = this.type;
-							/**
-							 * @param {Parse.TokenType} type
-							 * @param {Parse.Parser} parser
-							 * @param {Parse.TokTypes} tt
-							 * @returns {boolean}
-							 */
-							function inExpression(type, parser, tt) {
-								return (
-									parser.exprAllowed ||
-									type === tt.braceL || // Inside { }
-									type === tt.parenL || // Inside ( )
-									type === tt.eq || // After =
-									type === tt.comma || // After ,
-									type === tt.colon || // After :
-									type === tt.question || // After ?
-									type === tt.logicalOR || // After ||
-									type === tt.logicalAND || // After &&
-									type === tt.dot || // After . (for member expressions like obj.@prop)
-									type === tt.questionDot // After ?. (for optional chaining like obj?.@prop)
-								);
-							}
-
-							/**
-							 * @param {Parse.Parser} parser
-							 * @param {Parse.TokTypes} tt
-							 * @returns {boolean}
-							 */
-							function inAwait(parser, tt) {
-								return currentType === tt.name &&
-									parser.value === 'await' &&
-									parser.canAwait &&
-									parser.preToken
-									? inExpression(parser.preToken, parser, tt)
-									: false;
-							}
-
-							if (inExpression(currentType, this, tt) || inAwait(this, tt)) {
-								return this.readAtIdentifier();
-							}
+						if (startsWith('#style') && is_ripple_delimiter(char_after(6))) {
+							this.pos += 6;
+							return this.finishToken(tt.name, '#style');
 						}
 					}
 				}
@@ -678,139 +672,54 @@ function RipplePlugin(config) {
 			}
 
 			/**
-			 * Read an @ prefixed identifier
-			 * @type {Parse.Parser['readAtIdentifier']}
+			 * Override isLet to recognize `let &{` and `let &[` as variable declarations.
+			 * Acorn's isLet checks the char after `let` and only recognizes `{`, `[`, or identifiers.
+			 * The `&` char (38) is not in that set, so `let &{...}` would not be parsed as a declaration.
+			 * @type {Parse.Parser['isLet']}
 			 */
-			readAtIdentifier() {
-				const start = this.pos;
-				this.pos++; // skip '@'
+			isLet(context) {
+				if (!this.isContextual('let')) return false;
+				const skip = /\s*/y;
+				skip.lastIndex = this.pos;
+				const match = skip.exec(this.input);
+				if (!match) return super.isLet(context);
+				const next = this.pos + match[0].length;
+				const nextCh = this.input.charCodeAt(next);
+				// If next char is &, check if char after & is { or [
+				if (nextCh === 38) {
+					const afterAmp = this.input.charCodeAt(next + 1);
+					if (afterAmp === 123 || afterAmp === 91) return true;
+				}
+				return super.isLet(context);
+			}
 
-				// Read the identifier part manually
-				let word = '';
-				while (this.pos < this.input.length) {
-					const ch = this.input.charCodeAt(this.pos);
-					if (
-						(ch >= 65 && ch <= 90) || // A-Z
-						(ch >= 97 && ch <= 122) || // a-z
-						(ch >= 48 && ch <= 57) || // 0-9
-						ch === 95 ||
-						ch === 36
-					) {
-						// _ or $
-						word += this.input[this.pos++];
-					} else {
-						break;
+			/**
+			 * Parse binding atom - handles lazy destructuring patterns (&{...} and &[...])
+			 * When & is directly followed by { or [, parse as a lazy destructuring pattern.
+			 * The resulting ObjectPattern/ArrayPattern node gets a `lazy: true` flag.
+			 */
+			parseBindingAtom() {
+				if (this.type === tt.bitwiseAND) {
+					// Check that the char immediately after & is { or [ (no whitespace)
+					const charAfterAmp = this.input.charCodeAt(this.end);
+					if (charAfterAmp === 123 || charAfterAmp === 91) {
+						// & directly followed by { or [ — lazy destructuring
+						this.next(); // consume &, now current token is { or [
+						const pattern = super.parseBindingAtom();
+						/** @type {AST.ObjectPattern | AST.ArrayPattern} */ (pattern).lazy = true;
+						return pattern;
 					}
 				}
-
-				if (word === '') {
-					this.raise(start, 'Invalid @ identifier');
-				}
-
-				// Return the full identifier including @
-				return this.finishToken(tt.name, '@' + word);
+				return super.parseBindingAtom();
 			}
 
 			/**
-			 * Override parseIdent to mark @ identifiers as tracked
-			 * @type {Parse.Parser['parseIdent']}
-			 */
-			parseIdent(liberal) {
-				const node = /** @type {AST.Identifier &AST.NodeWithLocation} */ (
-					super.parseIdent(liberal)
-				);
-				if (node.name && node.name.startsWith('@')) {
-					set_tracked_name(node, node.name);
-					node.tracked = true;
-				}
-				return node;
-			}
-
-			/**
-			 * Override parseSubscripts to handle `.@[expression]` syntax for reactive computed member access
-			 * @type {Parse.Parser['parseSubscripts']}
-			 */
-			parseSubscripts(
-				base,
-				startPos,
-				startLoc,
-				noCalls,
-				maybeAsyncArrow,
-				optionalChained,
-				forInit,
-			) {
-				// Check for `.@[` pattern for reactive computed member access
-				const isDotOrOptional = this.type === tt.dot || this.type === tt.questionDot;
-
-				if (isDotOrOptional) {
-					// Check the next two characters without consuming tokens
-					// this.pos currently points AFTER the dot token
-					const nextChar = this.input.charCodeAt(this.pos);
-					const charAfter = this.input.charCodeAt(this.pos + 1);
-
-					// Check for @[ pattern (@ = 64, [ = 91)
-					if (nextChar === 64 && charAfter === 91) {
-						const node = /** @type {AST.MemberExpression} */ (this.startNodeAt(startPos, startLoc));
-						node.object = base;
-						node.computed = true;
-						node.optional = this.type === tt.questionDot;
-						node.tracked = true;
-
-						// Consume the dot/questionDot token
-						this.next();
-
-						// Manually skip the @ character
-						this.pos += 1;
-
-						// Now call finishToken to properly consume the [ bracket
-						this.finishToken(tt.bracketL);
-
-						// Now we're positioned correctly to parse the expression
-						this.next(); // Move to first token inside brackets
-
-						// Parse the expression inside brackets
-						node.property = this.parseExpression();
-
-						// Expect closing bracket
-						this.expect(tt.bracketR);
-
-						// Finish this MemberExpression node
-						base = /** @type {AST.MemberExpression} */ (this.finishNode(node, 'MemberExpression'));
-
-						// Recursively handle any further subscripts (chaining)
-						return this.parseSubscripts(
-							base,
-							startPos,
-							startLoc,
-							noCalls,
-							maybeAsyncArrow,
-							optionalChained,
-							forInit,
-						);
-					}
-				}
-
-				// Fall back to default parseSubscripts implementation
-				return super.parseSubscripts(
-					base,
-					startPos,
-					startLoc,
-					noCalls,
-					maybeAsyncArrow,
-					optionalChained,
-					forInit,
-				);
-			}
-
-			/**
-			 * Parse expression atom - handles TrackedArray and TrackedObject literals
+			 * Parse expression atom - handles RippleArray and RippleObject literals
 			 * @type {Parse.Parser['parseExprAtom']}
 			 */
 			parseExprAtom(refDestructuringErrors, forNew, forInit) {
-				// Check if this is @(expression) for unboxing tracked values
-				if (this.type === tt.parenL && this.value === '@(') {
-					return this.parseTrackedExpression();
-				}
+				const lookahead_type = this.lookahead().type;
+				const is_next_call_token = lookahead_type === tt.parenL || lookahead_type === tt.relational;
 
 				// Check if this is #server identifier for server function calls
 				if (this.type === tt.name && this.value === '#server') {
@@ -823,33 +732,6 @@ function RipplePlugin(config) {
 					const node = this.startNode();
 					this.next();
 					return /** @type {AST.StyleIdentifier} */ (this.finishNode(node, 'StyleIdentifier'));
-				}
-
-				// Check if this is #Map( or #Set(
-				if (this.type === tt.name && (this.value === '#Map' || this.value === '#Set')) {
-					const type = this.value === '#Map' ? 'TrackedMapExpression' : 'TrackedSetExpression';
-					return this.parseTrackedCollectionExpression(type);
-				}
-
-				// In loose mode, handle incomplete #Map/#Set prefixes (e.g., #M, #Ma, #S, #Se)
-				if (
-					this.#loose &&
-					this.type === tt.name &&
-					typeof this.value === 'string' &&
-					this.value.startsWith('#')
-				) {
-					// Return an Identifier node for incomplete tracked syntax
-					const node = /** @type {AST.Identifier} */ (this.startNode());
-					node.name = this.value;
-					this.next();
-					return this.finishNode(node, 'Identifier');
-				}
-
-				// Check if this is a tuple literal starting with #[
-				if (this.type === tt.bracketL && this.value === '#[') {
-					return this.parseTrackedArrayExpression();
-				} else if (this.type === tt.braceL && this.value === '#{') {
-					return this.parseTrackedObjectExpression();
 				}
 
 				// Check if this is a component expression (e.g., in object literal values)
@@ -877,31 +759,6 @@ function RipplePlugin(config) {
 				}
 
 				return expr;
-			}
-
-			/**
-			 * Parse `@(expression)` syntax for unboxing tracked values
-			 * Creates a TrackedExpression node with the argument property
-			 * @type {Parse.Parser['parseTrackedExpression']}
-			 */
-			parseTrackedExpression() {
-				const node = /** @type {AST.TrackedExpression} */ (this.startNode());
-				this.next(); // consume '@(' token
-				node.argument = this.parseExpression();
-				this.expect(tt.parenR); // expect ')'
-				return this.finishNode(node, 'TrackedExpression');
-			}
-
-			/**
-			 * Override to allow TrackedExpression as a valid lvalue for update expressions
-			 * @type {Parse.Parser['checkLValSimple']}
-			 */
-			checkLValSimple(expr, bindingType, checkClashes) {
-				// Allow TrackedExpression as a valid lvalue for ++/-- operators
-				if (expr.type === 'TrackedExpression') {
-					return;
-				}
-				return super.checkLValSimple(expr, bindingType, checkClashes);
 			}
 
 			/**
@@ -953,164 +810,36 @@ function RipplePlugin(config) {
 			}
 
 			/**
-			 * Parse `#Map(...)` or `#Set(...)` syntax for tracked collections
-			 * Creates a TrackedMap or TrackedSet node with the arguments property
-			 * @type {Parse.Parser['parseTrackedCollectionExpression']}
-			 */
-			parseTrackedCollectionExpression(type) {
-				const node =
-					/** @type {(AST.TrackedMapExpression | AST.TrackedSetExpression) & AST.NodeWithLocation} */ (
-						this.startNode()
-					);
-				this.next(); // consume '#Map' or '#Set'
-
-				// Check if we should NOT consume the parentheses
-				// This happens when #Map/#Set appears as a callee in 'new #Map(...)'
-				// In this case, the parentheses and arguments belong to the NewExpression
-				// We detect this by checking if next token is '(' but we just consumed a token
-				// that came right after 'new' keyword (indicated by context or recent token)
-
-				// Simple heuristic: if the input around our start position looks like 'new #Map('
-				// then don't consume the parens
-				const beforeStart = this.input.substring(Math.max(0, node.start - 5), node.start);
-				const isAfterNew = /new\s*$/.test(beforeStart);
-
-				if (!isAfterNew) {
-					// If we reach here, it means #Map or #Set is being called without 'new'
-					// Throw a TypeError to match JavaScript class constructor behavior
-					const constructorName =
-						type === 'TrackedMapExpression' ? '#Map (TrackedMap)' : '#Set (TrackedSet)';
-					this.raise(
-						node.start,
-						`TypeError: Class constructor ${constructorName} cannot be invoked without 'new'`,
-					);
-				}
-
-				// Don't consume parens or generics - they belong to NewExpression
-				// When used as "new #Map(...)" the next token is '('
-				// When used as "new #Map<K,V>(...)" the next token is '<' (relational)
-				if (this.type === tt.parenL || (this.type === tt.relational && this.value === '<')) {
-					node.arguments = [];
-					return this.finishNode(node, type);
-				}
-
-				this.expect(tt.parenL); // expect '('
-
-				node.arguments = [];
-				// Parse arguments similar to function call arguments
-				let first = true;
-				while (!this.eat(tt.parenR)) {
-					if (!first) {
-						this.expect(tt.comma);
-						if (this.afterTrailingComma(tt.parenR)) break;
-					} else {
-						first = false;
-					}
-
-					if (this.type === tt.ellipsis) {
-						// Spread argument
-						const arg = this.parseSpread();
-						node.arguments.push(arg);
-					} else {
-						// Regular argument
-						node.arguments.push(this.parseMaybeAssign(false));
-					}
-				}
-
-				return this.finishNode(node, type);
-			}
-
-			/**
-			 * @type {Parse.Parser['parseTrackedArrayExpression']}
-			 */
-			parseTrackedArrayExpression() {
-				const node = /** @type {AST.TrackedArrayExpression} */ (this.startNode());
-				this.next(); // consume the '#['
-
-				node.elements = [];
-
-				// Parse array elements similar to regular array parsing
-				let first = true;
-				while (!this.eat(tt.bracketR)) {
-					if (!first) {
-						this.expect(tt.comma);
-						if (this.afterTrailingComma(tt.bracketR)) break;
-					} else {
-						first = false;
-					}
-
-					if (this.type === tt.comma) {
-						// Hole in array
-						node.elements.push(null);
-					} else if (this.type === tt.ellipsis) {
-						// Spread element
-						const element = this.parseSpread();
-						node.elements.push(element);
-						if (this.type === tt.comma && this.input.charCodeAt(this.pos) === 93) {
-							this.raise(this.pos, 'Trailing comma is not permitted after the rest element');
-						}
-					} else {
-						// Regular element
-						node.elements.push(this.parseMaybeAssign(false));
-					}
-				}
-
-				return this.finishNode(node, 'TrackedArrayExpression');
-			}
-
-			/**
-			 * @type {Parse.Parser['parseTrackedObjectExpression']}
-			 */
-			parseTrackedObjectExpression() {
-				const node = /** @type {AST.TrackedObjectExpression} */ (this.startNode());
-				this.next(); // consume the '#{'
-
-				node.properties = [];
-
-				// Parse object properties similar to regular object parsing
-				let first = true;
-				while (!this.eat(tt.braceR)) {
-					if (!first) {
-						this.expect(tt.comma);
-						if (this.afterTrailingComma(tt.braceR)) break;
-					} else {
-						first = false;
-					}
-
-					if (this.type === tt.ellipsis) {
-						// Spread property
-						const prop = this.parseSpread();
-						node.properties.push(prop);
-						if (this.type === tt.comma && this.input.charCodeAt(this.pos) === 125) {
-							this.raise(this.pos, 'Trailing comma is not permitted after the rest element');
-						}
-					} else {
-						// Regular property
-						node.properties.push(this.parseProperty(false, new DestructuringErrors()));
-					}
-				}
-
-				return this.finishNode(node, 'TrackedObjectExpression');
-			}
-
-			/**
 			 * Parse a component - common implementation used by statements, expressions, and export defaults
 			 * @type {Parse.Parser['parseComponent']}
 			 */
-			parseComponent({ requireName = false, isDefault = false, declareName = false } = {}) {
+			parseComponent({
+				requireName = false,
+				isDefault = false,
+				declareName = false,
+				skipName = false,
+			} = {}) {
 				const node = /** @type {AST.Component} */ (this.startNode());
 				node.type = 'Component';
 				node.css = null;
 				node.default = isDefault;
-				this.next(); // consume 'component'
+
+				// skipName is used for computed property names where 'component' and the key
+				// have already been consumed before calling parseComponent
+				if (!skipName) {
+					this.next(); // consume 'component'
+				}
 				this.enterScope(0);
 
-				if (requireName) {
+				if (skipName) {
+					// For computed names, the key is parsed separately, so id is null
+					node.id = null;
+				} else if (requireName) {
 					node.id = this.parseIdent();
 					if (declareName) {
 						this.declareName(
 							node.id.name,
-							BINDING_TYPES.BIND_VAR,
+							BINDING_TYPES.BIND_FUNCTION,
 							/** @type {AST.NodeWithLocation} */ (node.id).start,
 						);
 					}
@@ -1119,7 +848,7 @@ function RipplePlugin(config) {
 					if (declareName && node.id) {
 						this.declareName(
 							node.id.name,
-							BINDING_TYPES.BIND_VAR,
+							BINDING_TYPES.BIND_FUNCTION,
 							/** @type {AST.NodeWithLocation} */ (node.id).start,
 						);
 					}
@@ -1170,6 +899,7 @@ function RipplePlugin(config) {
 					return this.parseFor(node, null);
 				}
 
+				// @ts-ignore — acorn internal: isLet accepts 0 args at runtime
 				let isLet = this.isLet();
 				if (this.type === tt._var || this.type === tt._const || isLet) {
 					let init = /** @type {AST.VariableDeclaration} */ (this.startNode()),
@@ -1212,7 +942,9 @@ function RipplePlugin(config) {
 				}
 
 				let containsEsc = this.containsEsc;
-				let refDestructuringErrors = new DestructuringErrors();
+				let refDestructuringErrors = new /** @type {new () => Parse.DestructuringErrors} */ (
+					/** @type {unknown} */ (DestructuringErrors)
+				)();
 				let initPos = this.start;
 				let init_expr =
 					awaitAt > -1
@@ -1349,10 +1081,17 @@ function RipplePlugin(config) {
 			 */
 			checkUnreserved(ref) {
 				if (ref.name === 'component') {
-					this.raise(
-						ref.start,
-						'"component" is a Ripple keyword and cannot be used as an identifier',
-					);
+					// Allow 'component' when it's followed by an identifier and '(' or '<' (component method in object literal or class)
+					// e.g., { component something() { ... } } or class Foo { component something<T>() { ... } }
+					// Also allow computed names: { component ['name']() { ... } }
+					// Also allow string literal names: { component 'name'() { ... } }
+					const nextChars = this.input.slice(this.pos).match(/^\s*(?:(\w+)\s*[(<]|\[|['"])/);
+					if (!nextChars) {
+						this.raise(
+							ref.start,
+							'"component" is a Ripple keyword and cannot be used as an identifier',
+						);
+					}
 				}
 				return super.checkUnreserved(ref);
 			}
@@ -1374,9 +1113,8 @@ function RipplePlugin(config) {
 			jsx_parseExpressionContainer() {
 				let node = /** @type {ESTreeJSX.JSXExpressionContainer} */ (this.startNode());
 				this.next();
-				let tracked = false;
 
-				if (this.value === 'html') {
+				if (this.type === tt.name && this.value === 'html') {
 					node.html = true;
 					this.next();
 					if (this.type === tt.braceR) {
@@ -1385,19 +1123,20 @@ function RipplePlugin(config) {
 							'"html" is a Ripple keyword and must be used in the form {html some_content}',
 						);
 					}
-					if (this.type.label === '@') {
-						this.next(); // consume @
-						tracked = true;
+				} else if (this.type === tt.name && this.value === 'text') {
+					node.text = true;
+					this.next();
+					if (this.type === tt.braceR) {
+						this.raise(
+							this.start,
+							'"text" is a Ripple keyword and must be used in the form {text some_value}',
+						);
 					}
 				}
 
 				node.expression =
 					this.type === tt.braceR ? this.jsx_parseEmptyExpression() : this.parseExpression();
 				this.expect(tt.braceR);
-
-				if (tracked && node.expression.type === 'Identifier') {
-					node.expression.tracked = true;
-				}
 
 				return this.finishNode(node, 'JSXExpressionContainer');
 			}
@@ -1461,10 +1200,6 @@ function RipplePlugin(config) {
 					} else {
 						const id = /** @type {AST.Identifier} */ (this.parseIdentNode());
 						id.tracked = false;
-						if (id.name.startsWith('@')) {
-							set_tracked_name(id, id.name);
-							id.tracked = true;
-						}
 						this.finishNode(id, 'Identifier');
 						/** @type {AST.Attribute} */ (node).name = id;
 						/** @type {AST.Attribute} */ (node).value = id;
@@ -1516,14 +1251,6 @@ function RipplePlugin(config) {
 						// Unexpected token after @
 						this.unexpected();
 					}
-				} else if (
-					(this.type === tt.name || this.type === tstt.jsxName) &&
-					this.value &&
-					/** @type {string} */ (this.value).startsWith('@')
-				) {
-					set_tracked_name(node, /** @type {string} */ (this.value));
-					node.tracked = true;
-					this.next();
 				} else if (this.type === tt.name || this.type.keyword || this.type === tstt.jsxName) {
 					node.name = /** @type {string} */ (this.value);
 					node.tracked = false; // Explicitly mark as not tracked
@@ -1557,40 +1284,9 @@ function RipplePlugin(config) {
 						)
 					);
 					memberExpr.object = node;
-
-					// Check for .@[expression] syntax for tracked computed member access
-					// After eating the dot, check if the current token is @ followed by [
-					if (this.type.label === '@') {
-						// Check if the next character after @ is [
-						const nextChar = this.input.charCodeAt(this.pos);
-
-						if (nextChar === 91) {
-							// [ character
-							memberExpr.computed = true;
-
-							// Consume the @ token
-							this.next();
-
-							// Now this.type should be bracketL
-							// Consume the [ and parse the expression inside
-							this.expect(tt.bracketL);
-
-							// Parse the expression inside brackets
-							memberExpr.property = /** @type {ESTreeJSX.JSXIdentifier} */ (this.parseExpression());
-							/** @type {AST.TrackedNode} */ (memberExpr.property).tracked = true;
-
-							// Expect closing bracket
-							this.expect(tt.bracketR);
-						} else {
-							// @ not followed by [, treat as regular tracked identifier
-							memberExpr.property = this.jsx_parseIdentifier();
-							memberExpr.computed = false;
-						}
-					} else {
-						// Regular dot notation
-						memberExpr.property = this.jsx_parseIdentifier();
-						memberExpr.computed = false;
-					}
+					memberExpr.property = this.jsx_parseIdentifier();
+					memberExpr.computed = false;
+					memberExpr = this.finishNode(memberExpr, 'JSXMemberExpression');
 					while (this.eat(tt.dot)) {
 						let newMemberExpr = /** @type {ESTreeJSX.JSXMemberExpression} */ (
 							this.startNodeAt(
@@ -1603,7 +1299,7 @@ function RipplePlugin(config) {
 						newMemberExpr.computed = false;
 						memberExpr = this.finishNode(newMemberExpr, 'JSXMemberExpression');
 					}
-					return this.finishNode(memberExpr, 'JSXMemberExpression');
+					return memberExpr;
 				}
 				return node;
 			}
@@ -1612,15 +1308,7 @@ function RipplePlugin(config) {
 			jsx_parseAttributeValue() {
 				switch (this.type) {
 					case tt.braceL:
-						const t = this.jsx_parseExpressionContainer();
-						return (
-							t.expression.type === 'JSXEmptyExpression' &&
-								this.raise(
-									/** @type {AST.NodeWithLocation} */ (t).start,
-									'attributes must only be assigned a non-empty expression',
-								),
-							t
-						);
+						return this.jsx_parseExpressionContainer();
 					case tstt.jsxTagStart:
 					case tt.string:
 						return this.parseExprAtom();
@@ -1648,12 +1336,40 @@ function RipplePlugin(config) {
 					const clause = /** @type {AST.CatchClause} */ (this.startNode());
 					this.next();
 					if (this.eat(tt.parenL)) {
-						clause.param = this.parseCatchClauseParam();
-					} else {
-						if (this.options.ecmaVersion < 10) {
-							this.unexpected();
+						// Parse first param (error) manually to support optional second param (reset).
+						// We can't use parseCatchClauseParam() because it eats the closing paren.
+						const param = this.parseBindingAtom();
+						const simple = param.type === 'Identifier';
+						this.enterScope(simple ? BINDING_TYPES.BIND_SIMPLE_CATCH : 0);
+						this.checkLValPattern(
+							param,
+							simple ? BINDING_TYPES.BIND_SIMPLE_CATCH : BINDING_TYPES.BIND_LEXICAL,
+						);
+						const type = this.tsTryParseTypeAnnotation();
+						if (type) {
+							param.typeAnnotation = type;
+							this.resetEndLocation(param);
 						}
+						clause.param = param;
+
+						// Optional second parameter: reset function
+						if (this.eat(tt.comma)) {
+							const reset_param = this.parseBindingAtom();
+							this.checkLValSimple(reset_param, BINDING_TYPES.BIND_LEXICAL);
+							const reset_type = this.tsTryParseTypeAnnotation();
+							if (reset_type) {
+								reset_param.typeAnnotation = reset_type;
+								this.resetEndLocation(reset_param);
+							}
+							clause.resetParam = reset_param;
+						} else {
+							clause.resetParam = null;
+						}
+
+						this.expect(tt.parenR);
+					} else {
 						clause.param = null;
+						clause.resetParam = null;
 						this.enterScope(0);
 					}
 					clause.body = this.parseBlock(false);
@@ -1673,7 +1389,9 @@ function RipplePlugin(config) {
 
 			/** @type {Parse.Parser['jsx_readToken']} */
 			jsx_readToken() {
-				const inside_tsx_compat = this.#path.findLast((n) => n.type === 'TsxCompat');
+				const inside_tsx_compat = this.#path.findLast(
+					(n) => n.type === 'TsxCompat' || n.type === 'Tsx',
+				);
 				if (inside_tsx_compat) {
 					return super.jsx_readToken();
 				}
@@ -1825,6 +1543,48 @@ function RipplePlugin(config) {
 			}
 
 			/**
+			 * Override jsx_parseElement to intercept expression-level JSX.
+			 * This is called by acorn-jsx's parseExprAtom when it encounters <
+			 * in expression position. Only <tsx> and <tsx:*> are allowed.
+			 * @type {Parse.Parser['jsx_parseElement']}
+			 */
+			jsx_parseElement() {
+				const inside_tsx = this.#path.findLast((n) => n.type === 'TsxCompat' || n.type === 'Tsx');
+				if (inside_tsx) {
+					// Inside tsx/tsx:*, let acorn-jsx handle it normally
+					return super.jsx_parseElement();
+				}
+
+				// Check if the element being parsed IS a <tsx> or <tsx:*> tag
+				// Current token is jsxTagStart, this.end is position after '<'
+				const tag_name_start = this.end;
+				const char_after_tsx = this.input.charCodeAt(tag_name_start + 3);
+				const is_tsx_tag =
+					this.input.startsWith('tsx', tag_name_start) &&
+					(tag_name_start + 3 >= this.input.length ||
+						char_after_tsx === 62 || // >
+						char_after_tsx === 47 || // / (self-closing)
+						char_after_tsx === 32 || // space
+						char_after_tsx === 9 || // tab
+						char_after_tsx === 10 || // newline
+						char_after_tsx === 13 || // carriage return
+						char_after_tsx === 58); // : (tsx:react)
+
+				if (is_tsx_tag) {
+					// Use Ripple's parseElement to create a Tsx/TsxCompat node
+					this.next();
+					return /** @type {import('estree-jsx').JSXElement} */ (
+						/** @type {unknown} */ (this.parseElement())
+					);
+				}
+
+				this.raise(
+					this.start,
+					'JSX elements cannot be used as expressions. Wrap with `<tsx>...</tsx>` or use elements as statements within a component.',
+				);
+			}
+
+			/**
 			 * @type {Parse.Parser['parseElement']}
 			 */
 			parseElement() {
@@ -1835,7 +1595,7 @@ function RipplePlugin(config) {
 				const start = this.start - 1;
 				const position = new acorn.Position(this.curLine, start - this.lineStart);
 
-				const element = /** @type {AST.Element | AST.TsxCompat} */ (this.startNode());
+				const element = /** @type {AST.Element | AST.Tsx | AST.TsxCompat} */ (this.startNode());
 				element.start = start;
 				/** @type {AST.NodeWithLocation} */ (element).loc.start = position;
 				element.metadata = { path: [] };
@@ -1850,6 +1610,8 @@ function RipplePlugin(config) {
 
 				// Check if this is a namespaced element (tsx:react)
 				const is_tsx_compat = open.name.type === 'JSXNamespacedName';
+				const is_tsx =
+					!is_tsx_compat && open.name.type === 'JSXIdentifier' && open.name.name === 'tsx';
 
 				if (is_tsx_compat) {
 					const namespace_node = /** @type {ESTreeJSX.JSXNamespacedName} */ (open.name);
@@ -1861,6 +1623,15 @@ function RipplePlugin(config) {
 						this.raise(
 							open.start,
 							`TSX compatibility elements cannot be self-closing. '<${tagName} />' must have a closing tag '</${tagName}>'.`,
+						);
+					}
+				} else if (is_tsx) {
+					/** @type {AST.Tsx} */ (element).type = 'Tsx';
+
+					if (open.selfClosing) {
+						this.raise(
+							open.start,
+							`TSX elements cannot be self-closing. '<tsx />' must have a closing tag '</tsx>'.`,
 						);
 					}
 				} else {
@@ -1878,14 +1649,19 @@ function RipplePlugin(config) {
 						}
 						if (attr.value !== null) {
 							if (attr.value.type === 'JSXExpressionContainer') {
-								/** @type {ESTreeJSX.JSXExpressionContainer['expression']} */ (attr.value) =
-									attr.value.expression;
+								const expression = attr.value.expression;
+								if (expression.type === 'Literal') {
+									expression.was_expression = true;
+								}
+								// @ts-ignore — intentional AST node conversion from JSX to Ripple
+								/** @type {ESTreeJSX.JSXAttribute} */ (attr).value =
+									/** @type {ESTreeJSX.JSXExpressionContainer['expression']} */ (expression);
 							}
 						}
 					}
 				}
 
-				if (!is_tsx_compat) {
+				if (!is_tsx_compat && !is_tsx) {
 					/** @type {AST.Element} */ (element).id = /** @type {AST.Identifier} */ (
 						convert_from_jsx(/** @type {ESTreeJSX.JSXIdentifier} */ (open.name))
 					);
@@ -1958,13 +1734,15 @@ function RipplePlugin(config) {
 							);
 
 							element.children = [
-								/** @type {AST.ScriptContent} */ ({
-									type: 'ScriptContent',
-									content,
-									start,
-									end: closingStart,
-									loc: { start: contentStartLoc, end: contentEndLoc },
-								}),
+								/** @type {AST.ScriptContent} */ (
+									/** @type {unknown} */ ({
+										type: 'ScriptContent',
+										content,
+										start,
+										end: closingStart,
+										loc: { start: contentStartLoc, end: contentEndLoc },
+									})
+								),
 							];
 
 							this.#path.pop();
@@ -2053,6 +1831,7 @@ function RipplePlugin(config) {
 						const insideTemplate =
 							parent?.type === 'Component' ||
 							parent?.type === 'Element' ||
+							parent?.type === 'Tsx' ||
 							parent?.type === 'TsxCompat';
 
 						if (curContext === tstc.tc_expr && !insideTemplate) {
@@ -2065,35 +1844,60 @@ function RipplePlugin(config) {
 						this.parseTemplateBody(/** @type {AST.Element} */ (element).children);
 						this.exitScope();
 
-						if (element.type === 'TsxCompat') {
+						if (element.type === 'Tsx') {
 							this.#path.pop();
 
-							const raise_error = () => {
-								this.raise(this.start, `Expected closing tag '</tsx:${element.kind}>'`);
-							};
+							if (!element.unclosed) {
+								const raise_error = () => {
+									this.raise(this.start, `Expected closing tag '</tsx>'`);
+								};
 
-							this.next();
-							// we should expect to see </tsx:kind>
-							if (this.value !== '/') {
-								raise_error();
+								this.next();
+								// we should expect to see </tsx>
+								if (this.value !== '/') {
+									raise_error();
+								}
+								this.next();
+								if (this.value !== 'tsx') {
+									raise_error();
+								}
+								this.next();
+								if (this.type !== tstt.jsxTagEnd) {
+									raise_error();
+								}
+								this.next();
 							}
-							this.next();
-							if (this.value !== 'tsx') {
-								raise_error();
+						} else if (element.type === 'TsxCompat') {
+							this.#path.pop();
+
+							if (!element.unclosed) {
+								const raise_error = () => {
+									this.raise(this.start, `Expected closing tag '</tsx:${element.kind}>'`);
+								};
+
+								this.next();
+								// we should expect to see </tsx:kind>
+								if (this.value !== '/') {
+									raise_error();
+								}
+								this.next();
+								if (this.value !== 'tsx') {
+									raise_error();
+								}
+								this.next();
+								if (this.type.label !== ':') {
+									raise_error();
+								}
+								this.next();
+								if (this.value !== element.kind) {
+									raise_error();
+								}
+								this.next();
+								if (this.type !== tstt.jsxTagEnd) {
+									raise_error();
+								}
+								this.next();
 							}
-							this.next();
-							if (this.type.label !== ':') {
-								raise_error();
-							}
-							this.next();
-							if (this.value !== element.kind) {
-								raise_error();
-							}
-							this.next();
-							if (this.type !== tstt.jsxTagEnd) {
-								raise_error();
-							}
-							this.next();
 						} else if (this.#path[this.#path.length - 1] === element) {
 							// Check if this element was properly closed
 							if (!this.#loose) {
@@ -2119,6 +1923,7 @@ function RipplePlugin(config) {
 					const insideTemplate =
 						parent?.type === 'Component' ||
 						parent?.type === 'Element' ||
+						parent?.type === 'Tsx' ||
 						parent?.type === 'TsxCompat';
 
 					if (curContext === tstc.tc_expr && !insideTemplate) {
@@ -2126,7 +1931,7 @@ function RipplePlugin(config) {
 					}
 				}
 
-				if (element.closingElement && !is_tsx_compat) {
+				if (element.closingElement && !is_tsx_compat && !is_tsx) {
 					/** @type {unknown} */ (element.closingElement.name) = convert_from_jsx(
 						element.closingElement.name,
 					);
@@ -2142,12 +1947,10 @@ function RipplePlugin(config) {
 			parseTemplateBody(body) {
 				const inside_func =
 					this.context.some((n) => n.token === 'function') || this.scopeStack.length > 1;
+				const inside_tsx = this.#path.findLast((n) => n.type === 'Tsx');
 				const inside_tsx_compat = this.#path.findLast((n) => n.type === 'TsxCompat');
 
 				if (!inside_func) {
-					if (this.type.label === 'return') {
-						throw new Error('`return` statements are not allowed in components');
-					}
 					if (this.type.label === 'continue') {
 						throw new Error('`continue` statements are not allowed in components');
 					}
@@ -2156,10 +1959,95 @@ function RipplePlugin(config) {
 					}
 				}
 
+				if (inside_tsx) {
+					this.exprAllowed = true;
+
+					while (true) {
+						if (this.type === tt.eof || this.pos >= this.input.length || this.type === tt.braceR) {
+							if (!this.#loose) {
+								this.raise(
+									this.start,
+									`Unclosed tag '<tsx>'. Expected '</tsx>' before end of component.`,
+								);
+							} else {
+								inside_tsx.unclosed = true;
+								/** @type {AST.NodeWithLocation} */ (inside_tsx).loc.end = {
+									.../** @type {AST.SourceLocation} */ (inside_tsx.openingElement.loc).end,
+								};
+								inside_tsx.end = inside_tsx.openingElement.end;
+							}
+							return;
+						}
+
+						if (this.input.slice(this.pos, this.pos + 4) === '/tsx') {
+							const after = this.input.charCodeAt(this.pos + 4);
+							// Make sure it's </tsx> and not </tsx:...>
+							if (after === 62 /* > */) {
+								return;
+							}
+						}
+
+						if (this.type === tt.braceL) {
+							const node = this.jsx_parseExpressionContainer();
+							body.push(node);
+						} else if (this.type === tstt.jsxTagStart) {
+							// Parse JSX element
+							const node = super.parseExpression();
+							body.push(node);
+						} else {
+							const start = this.start;
+							this.pos = start;
+							let text = '';
+
+							while (this.pos < this.input.length) {
+								const ch = this.input.charCodeAt(this.pos);
+
+								// Stop at opening tag, expression, or the component-closing brace
+								if (ch === 60 || ch === 123 || ch === 125) {
+									// < or { or }
+									break;
+								}
+
+								text += this.input[this.pos];
+								this.pos++;
+							}
+
+							if (text) {
+								const node = /** @type {ESTreeJSX.JSXText} */ ({
+									type: 'JSXText',
+									value: text,
+									raw: text,
+									start,
+									end: this.pos,
+								});
+								body.push(node);
+							}
+
+							// Always call next() to ensure parser makes progress
+							this.next();
+						}
+					}
+				}
 				if (inside_tsx_compat) {
 					this.exprAllowed = true;
 
 					while (true) {
+						if (this.type === tt.eof || this.pos >= this.input.length || this.type === tt.braceR) {
+							if (!this.#loose) {
+								this.raise(
+									this.start,
+									`Unclosed tag '<tsx:${inside_tsx_compat.kind}>'. Expected '</tsx:${inside_tsx_compat.kind}>' before end of component.`,
+								);
+							} else {
+								inside_tsx_compat.unclosed = true;
+								/** @type {AST.NodeWithLocation} */ (inside_tsx_compat).loc.end = {
+									.../** @type {AST.SourceLocation} */ (inside_tsx_compat.openingElement.loc).end,
+								};
+								inside_tsx_compat.end = inside_tsx_compat.openingElement.end;
+							}
+							return;
+						}
+
 						if (this.input.slice(this.pos, this.pos + 5) === '/tsx:') {
 							return;
 						}
@@ -2179,9 +2067,9 @@ function RipplePlugin(config) {
 							while (this.pos < this.input.length) {
 								const ch = this.input.charCodeAt(this.pos);
 
-								// Stop at opening tag, closing tag, or expression
-								if (ch === 60 || ch === 123) {
-									// < or {
+								// Stop at opening tag, expression, or the component-closing brace
+								if (ch === 60 || ch === 123 || ch === 125) {
+									// < or { or }
 									break;
 								}
 
@@ -2207,12 +2095,13 @@ function RipplePlugin(config) {
 				if (this.type === tt.braceL) {
 					const node = this.jsx_parseExpressionContainer();
 					// Keep JSXEmptyExpression as-is (for prettier to handle comments)
-					// but convert other expressions to Text/Html nodes
+					// but convert other expressions to Html/RippleExpression/Text nodes
 					if (node.expression.type !== 'JSXEmptyExpression') {
-						/** @type {AST.Html | AST.TextNode} */ (/** @type {unknown} */ (node)).type = node.html
-							? 'Html'
-							: 'Text';
+						/** @type {AST.RippleExpression | AST.Html | AST.TextNode} */ (
+							/** @type {unknown} */ (node)
+						).type = node.html ? 'Html' : node.text ? 'Text' : 'RippleExpression';
 						delete node.html;
+						delete node.text;
 					}
 					body.push(node);
 				} else if (this.type === tt.braceR) {
@@ -2242,7 +2131,9 @@ function RipplePlugin(config) {
 						const currentElement = this.#path[this.#path.length - 1];
 						if (
 							!currentElement ||
-							(currentElement.type !== 'Element' && currentElement.type !== 'TsxCompat')
+							(currentElement.type !== 'Element' &&
+								currentElement.type !== 'Tsx' &&
+								currentElement.type !== 'TsxCompat')
 						) {
 							this.raise(this.start, 'Unexpected closing tag');
 						}
@@ -2254,6 +2145,12 @@ function RipplePlugin(config) {
 
 						if (currentElement.type === 'TsxCompat') {
 							openingTagName = 'tsx:' + currentElement.kind;
+							closingTagName =
+								closingElement.name?.type === 'JSXNamespacedName'
+									? closingElement.name.namespace.name + ':' + closingElement.name.name.name
+									: this.getElementName(closingElement.name);
+						} else if (currentElement.type === 'Tsx') {
+							openingTagName = 'tsx';
 							closingTagName =
 								closingElement.name?.type === 'JSXNamespacedName'
 									? closingElement.name.namespace.name + ':' + closingElement.name.name.name
@@ -2279,12 +2176,16 @@ function RipplePlugin(config) {
 									const elem = this.#path[this.#path.length - 1];
 
 									// Stop at non-Element boundaries (Component, etc.)
-									if (elem.type !== 'Element' && elem.type !== 'TsxCompat') {
+									if (elem.type !== 'Element' && elem.type !== 'Tsx' && elem.type !== 'TsxCompat') {
 										break;
 									}
 
 									const elemName =
-										elem.type === 'TsxCompat' ? 'tsx:' + elem.kind : this.getElementName(elem.id);
+										elem.type === 'TsxCompat'
+											? 'tsx:' + elem.kind
+											: elem.type === 'Tsx'
+												? 'tsx'
+												: this.getElementName(elem.id);
 
 									// Found matching opening tag
 									if (elemName === closingTagName) {
@@ -2347,74 +2248,36 @@ function RipplePlugin(config) {
 					this.type === tt.braceL &&
 					this.context.some((c) => c === tstc.tc_expr)
 				) {
-					this.next();
 					const node = this.jsx_parseExpressionContainer();
-					// Keep JSXEmptyExpression as-is (don't convert to Text)
+					// Keep JSXEmptyExpression as-is (don't convert to RippleExpression/Text/Html)
 					if (node.expression.type !== 'JSXEmptyExpression') {
-						/** @type {AST.TextNode} */ (/** @type {unknown} */ (node)).type = 'Text';
+						/** @type {AST.RippleExpression | AST.Html | AST.TextNode} */ (
+							/** @type {unknown} */ (node)
+						).type = node.html ? 'Html' : node.text ? 'Text' : 'RippleExpression';
+						delete node.html;
+						delete node.text;
 					}
-					this.next();
-					this.context.pop();
-					this.context.pop();
-					return /** @type {ESTreeJSX.JSXEmptyExpression | AST.TextNode | ESTreeJSX.JSXExpressionContainer} */ (
+
+					return /** @type {ESTreeJSX.JSXEmptyExpression | AST.RippleExpression | AST.Html | AST.TextNode | ESTreeJSX.JSXExpressionContainer} */ (
 						/** @type {unknown} */ (node)
 					);
 				}
 
 				if (this.value === '#server') {
-					return this.parseServerBlock();
+					// Peek ahead to see if this is a server block (#server { ... }) vs
+					// a server identifier expression (#server.fn(), #server.fn().then())
+					let peek_pos = this.end;
+					while (peek_pos < this.input.length && /\s/.test(this.input[peek_pos])) peek_pos++;
+					if (peek_pos < this.input.length && this.input.charCodeAt(peek_pos) === 123) {
+						// Next non-whitespace character is '{' — parse as server block
+						return this.parseServerBlock();
+					}
+					// Otherwise fall through to parse as expression statement (e.g., #server.fn().then(...))
 				}
 
 				if (this.value === 'component') {
 					this.awaitPos = 0;
 					return this.parseComponent({ requireName: true, declareName: true });
-				}
-				if (this.type.label === '@') {
-					// Try to parse as an expression statement first using tryParse
-					// This allows us to handle Ripple @ syntax like @count++ without
-					// interfering with legitimate decorator syntax
-					this.skip_decorator = true;
-					const expressionResult = this.tryParse(() => {
-						const node = /** @type {AST.ExpressionStatement} */ (this.startNode());
-						this.next();
-						// Force expression context to ensure @ is tokenized correctly
-						const old_expr_allowed = this.exprAllowed;
-						this.exprAllowed = true;
-						node.expression = this.parseExpression();
-
-						if (node.expression.type === 'UpdateExpression') {
-							/** @type {AST.Expression} */
-							let object = node.expression.argument;
-							while (object.type === 'MemberExpression') {
-								object = /** @type {AST.Expression} */ (object.object);
-							}
-							if (object.type === 'Identifier') {
-								object.tracked = true;
-							}
-						} else if (node.expression.type === 'AssignmentExpression') {
-							/** @type {AST.Expression | AST.Pattern | AST.Identifier} */
-							let object = node.expression.left;
-							while (object.type === 'MemberExpression') {
-								object = /** @type {AST.Expression} */ (object.object);
-							}
-							if (object.type === 'Identifier') {
-								object.tracked = true;
-							}
-						} else if (node.expression.type === 'Identifier') {
-							node.expression.tracked = true;
-						} else {
-							// TODO?
-						}
-
-						this.exprAllowed = old_expr_allowed;
-						return this.finishNode(node, 'ExpressionStatement');
-					});
-					this.skip_decorator = false;
-
-					// If parsing as expression statement succeeded, use that result
-					if (expressionResult.node) {
-						return expressionResult.node;
-					}
 				}
 
 				if (this.type === tstt.jsxTagStart) {
@@ -2428,6 +2291,37 @@ function RipplePlugin(config) {
 						this.unexpected();
 					}
 					return node;
+				}
+
+				// &[ or &{ at statement level — lazy destructuring assignment
+				// e.g., &[data] = track(0); or &{x, y} = obj;
+				if (this.type === tt.bitwiseAND) {
+					const charAfterAmp = this.input.charCodeAt(this.end);
+					if (charAfterAmp === 123 || charAfterAmp === 91) {
+						const node = /** @type {AST.ExpressionStatement} */ (this.startNode());
+						const assign_node = /** @type {AST.AssignmentExpression} */ (this.startNode());
+						this.next(); // consume &
+						// Parse the left-hand side (array or object expression)
+						const left = /** @type {AST.ArrayPattern | AST.ObjectPattern} */ (
+							/** @type {unknown} */ (this.parseExprAtom())
+						);
+						// Convert expression to destructuring pattern
+						this.toAssignable(left, false);
+						left.lazy = true;
+						// Expect = operator
+						this.expect(tt.eq);
+						// Parse the right-hand side
+						assign_node.operator = '=';
+						assign_node.left = left;
+						assign_node.right = /** @type {AST.Expression} */ (this.parseMaybeAssign());
+						node.expression = /** @type {AST.AssignmentExpression} */ (
+							this.finishNode(assign_node, 'AssignmentExpression')
+						);
+						this.semicolon();
+						return /** @type {AST.ExpressionStatement} */ (
+							this.finishNode(node, 'ExpressionStatement')
+						);
+					}
 				}
 
 				return super.parseStatement(context, topLevel, exports);
@@ -2525,7 +2419,7 @@ function get_comment_handlers(source, comments, index = 0) {
 		},
 
 		/**
-		 * @param {AST.Node} ast
+		 * @param {AST.Node | AST.CSS.StyleSheet} ast
 		 */
 		add_comments: (ast) => {
 			if (comments.length === 0) return;
@@ -2543,7 +2437,7 @@ function get_comment_handlers(source, comments, index = 0) {
 
 			walk(ast, null, {
 				_(node, { next, path }) {
-					const metadata = node?.metadata;
+					const metadata = /** @type {AST.Node} */ (node)?.metadata;
 
 					/**
 					 * Check if a comment is inside an attribute expression
@@ -2616,6 +2510,36 @@ function get_comment_handlers(source, comments, index = 0) {
 						return element;
 					}
 
+					// Skip CSS nodes entirely - they use CSS-local positions (relative to
+					// the <style> tag content) which would incorrectly match against
+					// absolute source positions of JS/HTML comments. Also consume any
+					// CSS comments (which have absolute positions) that fall within the
+					// parent <style> element's content range so they don't leak to
+					// subsequent JS nodes.
+					if (node.type === 'StyleSheet') {
+						const styleElement = /** @type {AST.Element & AST.NodeWithLocation | undefined} */ (
+							path.findLast(
+								(ancestor) =>
+									ancestor &&
+									ancestor.type === 'Element' &&
+									ancestor.id &&
+									/** @type {AST.Identifier} */ (ancestor.id).name === 'style',
+							)
+						);
+						if (styleElement) {
+							const cssStart =
+								/** @type {AST.NodeWithLocation} */ (styleElement.openingElement)?.end ??
+								styleElement.start;
+							const cssEnd =
+								/** @type {AST.NodeWithLocation} */ (styleElement.closingElement)?.start ??
+								styleElement.end;
+							while (comments[0] && comments[0].start >= cssStart && comments[0].end <= cssEnd) {
+								comments.shift();
+							}
+						}
+						return;
+					}
+
 					if (metadata && metadata.commentContainerId !== undefined) {
 						// For empty template elements, keep comments as `innerComments`.
 						// The Prettier plugin uses `innerComments` to preserve them and
@@ -2629,6 +2553,24 @@ function get_comment_handlers(source, comments, index = 0) {
 								comments[0].context.containerId === metadata.commentContainerId &&
 								comments[0].context.beforeMeaningfulChild
 							) {
+								// Check that the comment is actually in this element's own content
+								// area, not positionally inside a child element. This handles the
+								// case where jsx_parseOpeningElementAt() triggers jsx_readToken()
+								// before the child element is pushed to the parser's #path, causing
+								// comments inside the child to get the parent's containerId.
+								const commentStart = comments[0].start;
+								const isInsideChildElement = /** @type {AST.NodeWithChildren} */ (
+									node
+								).children?.some(
+									(child) =>
+										child &&
+										child.start !== undefined &&
+										child.end !== undefined &&
+										commentStart >= child.start &&
+										commentStart < child.end,
+								);
+								if (isInsideChildElement) break;
+
 								const elementComment = /** @type {AST.CommentWithLocation} */ (comments.shift());
 
 								(metadata.elementLeadingComments ||= []).push(elementComment);
@@ -2705,6 +2647,16 @@ function get_comment_handlers(source, comments, index = 0) {
 					next();
 
 					if (comments[0]) {
+						if (node.type === 'Program' && node.body.length === 0) {
+							// Collect all comments in an empty program (file with only comments)
+							while (comments.length) {
+								const comment = /** @type {AST.CommentWithLocation} */ (comments.shift());
+								(node.innerComments ||= []).push(comment);
+							}
+							if (node.innerComments && node.innerComments.length > 0) {
+								return;
+							}
+						}
 						if (node.type === 'BlockStatement' && node.body.length === 0) {
 							// Collect all comments that fall within this empty block
 							while (
@@ -2763,38 +2715,34 @@ function get_comment_handlers(source, comments, index = 0) {
 							let isArgument = false;
 							let isSwitchCaseSibling = false;
 
-							if (
-								parent.type === 'BlockStatement' ||
-								parent.type === 'Program' ||
-								parent.type === 'Component' ||
-								parent.type === 'ClassBody'
-							) {
-								node_array = parent.body;
-							} else if (parent.type === 'SwitchStatement') {
-								node_array = parent.cases;
-								isSwitchCaseSibling = true;
-							} else if (parent.type === 'SwitchCase') {
-								node_array = parent.consequent;
-							} else if (
-								parent.type === 'ArrayExpression' ||
-								parent.type === 'TrackedArrayExpression'
-							) {
-								node_array = parent.elements;
-							} else if (
-								parent.type === 'ObjectExpression' ||
-								parent.type === 'TrackedObjectExpression'
-							) {
-								node_array = parent.properties;
-							} else if (
-								parent.type === 'FunctionDeclaration' ||
-								parent.type === 'FunctionExpression' ||
-								parent.type === 'ArrowFunctionExpression'
-							) {
-								node_array = parent.params;
-								isParam = true;
-							} else if (parent.type === 'CallExpression' || parent.type === 'NewExpression') {
-								node_array = parent.arguments;
-								isArgument = true;
+							if (parent) {
+								if (
+									parent.type === 'BlockStatement' ||
+									parent.type === 'Program' ||
+									parent.type === 'Component' ||
+									parent.type === 'ClassBody'
+								) {
+									node_array = parent.body;
+								} else if (parent.type === 'SwitchStatement') {
+									node_array = parent.cases;
+									isSwitchCaseSibling = true;
+								} else if (parent.type === 'SwitchCase') {
+									node_array = parent.consequent;
+								} else if (parent.type === 'ArrayExpression') {
+									node_array = parent.elements;
+								} else if (parent.type === 'ObjectExpression') {
+									node_array = parent.properties;
+								} else if (
+									parent.type === 'FunctionDeclaration' ||
+									parent.type === 'FunctionExpression' ||
+									parent.type === 'ArrowFunctionExpression'
+								) {
+									node_array = parent.params;
+									isParam = true;
+								} else if (parent.type === 'CallExpression' || parent.type === 'NewExpression') {
+									node_array = parent.arguments;
+									isArgument = true;
+								}
 							}
 
 							if (node_array && Array.isArray(node_array)) {
@@ -3032,6 +2980,7 @@ export function parse(source, filename, options) {
 		ast = parser.parse(source, {
 			sourceType: 'module',
 			ecmaVersion: 13,
+			allowReturnOutsideFunction: true,
 			locations: true,
 			onComment,
 			rippleOptions: {

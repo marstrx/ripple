@@ -3,7 +3,8 @@
 import { IS_CONTROLLED, IS_INDEXED } from '../../../constants.js';
 import { branch, destroy_block, destroy_block_children, render } from './blocks.js';
 import { FOR_BLOCK, TRACKED_ARRAY } from './constants.js';
-import { create_text, next_sibling } from './operations.js';
+import { hydrate_next, hydrate_node, hydrating, set_hydrate_node } from './hydration.js';
+import { create_text, get_first_child, get_last_child, next_sibling } from './operations.js';
 import { active_block, set, tracked, untrack } from './runtime.js';
 import { array_from, is_array } from './utils.js';
 
@@ -111,7 +112,16 @@ export function for_block(node, get_collection, render_fn, flags) {
 	var anchor = /** @type {Element | Text} */ (node);
 
 	if (is_controlled) {
-		anchor = node.appendChild(create_text());
+		if (hydrating) {
+			var parent_node = /** @type {Element} */ (node);
+			/** @type {Element | Text} */ (set_hydrate_node(get_first_child(parent_node)));
+		} else {
+			anchor = node.appendChild(create_text());
+		}
+	}
+
+	if (hydrating) {
+		hydrate_next();
 	}
 
 	render(
@@ -123,6 +133,10 @@ export function for_block(node, get_collection, render_fn, flags) {
 			untrack(() => {
 				reconcile_by_ref(anchor, block, array, render_fn, is_controlled, is_indexed);
 			});
+
+			if (hydrating) {
+				anchor = /** @type {Element | Text} */ (hydrate_node);
+			}
 		},
 		null,
 		FOR_BLOCK,
@@ -145,7 +159,18 @@ export function for_block_keyed(node, get_collection, render_fn, flags, get_key)
 	var anchor = /** @type {Element | Text} */ (node);
 
 	if (is_controlled) {
-		anchor = node.appendChild(create_text());
+		var parent_node = /** @type {Element} */ (node);
+
+		if (hydrating) {
+			/** @type {Element | Text} */ (set_hydrate_node(get_first_child(parent_node)));
+			anchor = /** @type {Element | Text} */ (get_last_child(parent_node));
+		} else {
+			anchor = node.appendChild(create_text());
+		}
+	}
+
+	if (hydrating) {
+		hydrate_next();
 	}
 
 	render(
@@ -411,7 +436,7 @@ function reconcile_by_key(anchor, block, b, render_fn, is_controlled, is_indexed
 						if (fast_path_removal) {
 							fast_path_removal = false;
 							while (i > a_start) {
-								destroy_block(a[a_start++]);
+								destroy_block(a_blocks[a_start++]);
 							}
 						}
 						sources[j - b_start] = i + 1;
@@ -425,7 +450,7 @@ function reconcile_by_key(anchor, block, b, render_fn, is_controlled, is_indexed
 						if (is_indexed) {
 							update_index(block, j);
 						}
-						update_value(b_block, b_val);
+						update_value(block, b_val);
 						++patched;
 					} else if (!fast_path_removal) {
 						destroy_block(a_blocks[i]);
@@ -669,7 +694,7 @@ function reconcile_by_ref(anchor, block, b, render_fn, is_controlled, is_indexed
 						if (fast_path_removal) {
 							fast_path_removal = false;
 							while (i > a_start) {
-								destroy_block(a[a_start++]);
+								destroy_block(a_blocks[a_start++]);
 							}
 						}
 						sources[j - b_start] = i + 1;

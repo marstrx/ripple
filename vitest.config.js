@@ -9,7 +9,11 @@ export default defineConfig({
 			{
 				test: {
 					name: 'ripple-client',
-					include: ['packages/ripple/tests/client/**/*.test.ripple'],
+					include: [
+						'packages/ripple/tests/client/**/*.test.ripple',
+						'packages/ripple/tests/client/**/*.test.rsrx',
+						'packages/ripple/tests/client/**/*.test.tsrx',
+					],
 					environment: 'jsdom',
 					setupFiles: ['packages/ripple/tests/setup-client.js'],
 					globals: true,
@@ -20,8 +24,14 @@ export default defineConfig({
 			{
 				test: {
 					name: 'ripple-server',
-					include: ['packages/ripple/tests/server/**/*.test.ripple'],
+					include: [
+						'packages/ripple/tests/server/**/*.test.ripple',
+						'packages/ripple/tests/server/**/*.test.rsrx',
+						'packages/ripple/tests/server/**/*.test.tsrx',
+					],
 					environment: 'node',
+					setupFiles: ['packages/ripple/tests/setup-server.js'],
+					globals: true,
 				},
 				plugins: [ripple({ excludeRippleExternalModules: true })],
 				resolve: process.env.VITEST ? { conditions: ['default'] } : undefined,
@@ -62,6 +72,42 @@ export default defineConfig({
 			},
 			{
 				test: {
+					name: 'adapter',
+					include: ['packages/adapter/tests/**/*.test.js'],
+					environment: 'node',
+					globals: true,
+				},
+				plugins: [],
+			},
+			{
+				test: {
+					name: 'adapter-node',
+					include: ['packages/adapter-node/tests/**/*.test.js'],
+					environment: 'node',
+					globals: true,
+				},
+				plugins: [],
+			},
+			{
+				test: {
+					name: 'adapter-bun',
+					include: ['packages/adapter-bun/tests/**/*.test.js'],
+					environment: 'node',
+					globals: true,
+				},
+				plugins: [],
+			},
+			{
+				test: {
+					name: 'adapter-vercel',
+					include: ['packages/adapter-vercel/tests/**/*.test.js'],
+					environment: 'node',
+					globals: true,
+				},
+				plugins: [],
+			},
+			{
+				test: {
 					name: 'utils',
 					include: ['packages/ripple/tests/utils/**/*.test.js'],
 					environment: 'node',
@@ -72,12 +118,31 @@ export default defineConfig({
 			{
 				test: {
 					name: 'compat-react',
-					include: ['packages/compat-react/tests/**/*.test.ripple'],
+					include: [
+						'packages/compat-react/tests/**/*.test.ripple',
+						'packages/compat-react/tests/**/*.test.rsrx',
+						'packages/compat-react/tests/**/*.test.tsrx',
+					],
 					environment: 'jsdom',
 					setupFiles: ['packages/compat-react/tests/setup.js'],
 					globals: true,
 				},
 				plugins: [ripple({ excludeRippleExternalModules: true })],
+				resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
+			},
+			{
+				test: {
+					name: 'ripple-hydration',
+					include: ['packages/ripple/tests/hydration/**/*.test.js'],
+					environment: 'jsdom',
+					setupFiles: ['packages/ripple/tests/setup-hydration.js'],
+					globalSetup: ['packages/ripple/tests/hydration/build-components.js'],
+					globals: true,
+				},
+				plugins: [ripple({ excludeRippleExternalModules: true })],
+				// Use browser conditions for client code, but server-compiled
+				// components may import from 'ripple' which needs server runtime
+				// This is a limitation - reactive server components need different setup
 				resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
 			},
 		],

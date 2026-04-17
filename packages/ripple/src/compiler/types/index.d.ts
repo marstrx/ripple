@@ -5,37 +5,40 @@ import type { NAMESPACE_URI } from '../../runtime/internal/client/constants.js';
 import type { Parse } from '#parser';
 import type * as ESRap from 'esrap';
 import type { RippleCompileError, CompileOptions } from 'ripple/compiler';
-
-export type RpcModules = Map<string, [string, string]>;
-
-declare global {
-	var rpc_modules: RpcModules | undefined;
-}
+import type { Position } from 'acorn';
+import type { RequireAllOrNone } from '#helpers';
 
 export type NameSpace = keyof typeof NAMESPACE_URI;
 interface BaseNodeMetaData {
 	scoped?: boolean;
 	path: AST.Node[];
 	has_template?: boolean;
-	source_name?: string | '#Map' | '#Set' | '#server' | '#style';
+	source_name?: string | '#server' | '#style';
 	is_capitalized?: boolean;
-	has_await?: boolean;
 	commentContainerId?: number;
 	parenthesized?: boolean;
 	elementLeadingComments?: AST.Comment[];
-	inside_component_top_level?: boolean;
+	returns?: AST.ReturnStatement[];
+	has_return?: boolean;
+	has_throw?: boolean;
+	is_reactive?: boolean;
+	lone_return?: boolean;
+	forceMapping?: boolean;
+	lazy_id?: string;
 }
 
 interface FunctionMetaData extends BaseNodeMetaData {
-	was_component?: boolean;
+	// needed for volar tokens to recognize component functions
+	is_component?: boolean;
+	is_method?: boolean;
 	tracked?: boolean;
 }
 
 // Strip parent, loc, and range from TSESTree nodes to match @sveltejs/acorn-typescript output
 // acorn-typescript uses start/end instead of range, and loc is optional
 type AcornTSNode<T> = Omit<T, 'parent' | 'loc' | 'range' | 'expression'> & {
-	start: number;
-	end: number;
+	start?: number;
+	end?: number;
 	loc?: AST.SourceLocation;
 	range?: AST.BaseNode['range'];
 	metadata: BaseNodeMetaData;
@@ -52,6 +55,10 @@ interface FunctionLikeTS {
 
 // Ripple augmentation for ESTree function nodes
 declare module 'estree' {
+	interface Program {
+		innerComments?: Comment[] | undefined;
+	}
+
 	interface FunctionDeclaration extends FunctionLikeTS {
 		metadata: FunctionMetaData;
 	}
@@ -62,34 +69,78 @@ declare module 'estree' {
 		metadata: FunctionMetaData;
 	}
 
+	interface NewExpression {
+		metadata: BaseNodeMetaData & {
+			skipNewMapping?: boolean;
+		};
+	}
+
+	type Accessibility = 'public' | 'protected' | 'private'; // missing in acorn-typescript types
 	interface MethodDefinition {
 		typeParameters?: TSTypeParameterDeclaration;
+		accessibility?: Accessibility;
+	}
+
+	interface PropertyDefinition {
+		accessibility?: Accessibility;
+		readonly?: boolean;
+		optional?: boolean;
 	}
 
 	interface ClassDeclaration {
 		typeParameters?: AST.TSTypeParameterDeclaration;
-		superTypeArguments?: AST.TSTypeParameterInstantiation;
+		superTypeParameters?: AST.TSTypeParameterInstantiation;
 		implements?: AST.TSClassImplements[];
 	}
 
 	interface ClassExpression {
 		typeParameters?: AST.TSTypeParameterDeclaration;
-		superTypeArguments?: AST.TSTypeParameterInstantiation;
+		superTypeParameters?: AST.TSTypeParameterInstantiation;
 		implements?: AST.TSClassImplements[];
 	}
 
-	interface Identifier extends TrackedNode {}
+	interface Identifier extends AST.TrackedNode {
+		metadata: BaseNodeMetaData & {
+			// needed for volar tokens to recognize component functions
+			is_component?: boolean;
+		};
+		typeAnnotation?: TSTypeAnnotation | undefined;
+		decorators: TSESTree.Decorator[];
+		optional: boolean;
+	}
 
-	interface MemberExpression extends AST.TrackedNode {}
+	// Lazy destructuring patterns (&{...} and &[...])
+	interface ObjectPattern {
+		lazy?: boolean;
+	}
+	interface ArrayPattern {
+		lazy?: boolean;
+	}
+
+	// We mark the whole node as marked when member is @[expression]
+	// Otherwise, we only mark Identifier nodes
+	interface MemberExpression {
+		tracked?: boolean;
+	}
+
+	interface SimpleLiteral extends AST.LiteralNode {}
+	interface RegExpLiteral extends AST.LiteralNode {}
+	interface BigIntLiteral extends AST.LiteralNode {}
 
 	interface TrackedNode {
 		tracked?: boolean;
 	}
 
+	interface LiteralNode {
+		was_expression?: boolean;
+	}
+
 	// Include TypeScript node types and Ripple-specific nodes in NodeMap
 	interface NodeMap {
 		Component: Component;
+		Tsx: Tsx;
 		TsxCompat: TsxCompat;
+		RippleExpression: RippleExpression;
 		Html: Html;
 		Element: Element;
 		Text: TextNode;
@@ -97,7 +148,6 @@ declare module 'estree' {
 		ServerBlockStatement: ServerBlockStatement;
 		ServerIdentifier: ServerIdentifier;
 		StyleIdentifier: StyleIdentifier;
-		TrackedExpression: TrackedExpression;
 		Attribute: Attribute;
 		RefAttribute: RefAttribute;
 		SpreadAttribute: SpreadAttribute;
@@ -106,20 +156,21 @@ declare module 'estree' {
 	}
 
 	interface ExpressionMap {
-		TrackedArrayExpression: TrackedArrayExpression;
-		TrackedObjectExpression: TrackedObjectExpression;
-		TrackedMapExpression: TrackedMapExpression;
-		TrackedSetExpression: TrackedSetExpression;
-		TrackedExpression: TrackedExpression;
 		StyleIdentifier: StyleIdentifier;
 		ServerIdentifier: ServerIdentifier;
 		Text: TextNode;
+		JSXEmptyExpression: ESTreeJSX.JSXEmptyExpression;
+		ParenthesizedExpression: ParenthesizedExpression;
+		TSAsExpression: TSAsExpression;
 	}
 
 	// Missing estree type
 	interface ParenthesizedExpression extends AST.BaseNode {
 		type: 'ParenthesizedExpression';
 		expression: AST.Expression;
+		metadata: BaseNodeMetaData & {
+			skipParenthesisMapping?: boolean;
+		};
 	}
 
 	interface Comment {
@@ -144,16 +195,20 @@ declare module 'estree' {
 		pending?: AST.BlockStatement | null;
 	}
 
+	interface CatchClause {
+		resetParam?: AST.Pattern | null;
+	}
+
 	interface ForOfStatement {
 		index?: AST.Identifier | null;
 		key?: AST.Expression | null;
 	}
 
-	interface ServerIdentifier extends AST.BaseNode {
+	interface ServerIdentifier extends AST.BaseExpression {
 		type: 'ServerIdentifier';
 	}
 
-	interface StyleIdentifier extends AST.BaseNode {
+	interface StyleIdentifier extends AST.BaseExpression {
 		type: 'StyleIdentifier';
 	}
 
@@ -200,6 +255,12 @@ declare module 'estree' {
 		loc: AST.SourceLocation;
 	}
 
+	interface NodeWithMaybeComments {
+		innerComments?: AST.Comment[] | undefined;
+		leadingComments?: AST.Comment[] | undefined;
+		trailingComments?: AST.Comment[] | undefined;
+	}
+
 	/**
 	 * Ripple custom interfaces and types section
 	 */
@@ -211,12 +272,22 @@ declare module 'estree' {
 		body: AST.Node[];
 		css: CSS.StyleSheet | null;
 		metadata: BaseNodeMetaData & {
-			inherited_css?: boolean;
 			topScopedClasses?: TopScopedClasses;
 			styleClasses?: StyleClasses;
 			styleIdentifierPresent?: boolean;
 		};
 		default: boolean;
+		typeParameters?: AST.TSTypeParameterDeclaration;
+	}
+
+	interface Tsx extends AST.BaseNode {
+		type: 'Tsx';
+		attributes: Array<any>;
+		children: ESTreeJSX.JSXElement['children'];
+		selfClosing?: boolean;
+		unclosed?: boolean;
+		openingElement: ESTreeJSX.JSXOpeningElement;
+		closingElement: ESTreeJSX.JSXClosingElement;
 	}
 
 	interface TsxCompat extends AST.BaseNode {
@@ -232,12 +303,19 @@ declare module 'estree' {
 
 	interface Html extends AST.BaseNode {
 		type: 'Html';
-		expression: Expression;
+		expression: AST.Expression;
+	}
+
+	export interface RippleExpression extends AST.BaseExpression {
+		type: 'RippleExpression';
+		expression: AST.Expression;
+		loc?: AST.SourceLocation;
 	}
 
 	interface Element extends AST.BaseNode {
 		type: 'Element';
-		id: AST.Identifier;
+		// MemberExpression for namespaced or dynamic elements
+		id: AST.Identifier | AST.MemberExpression;
 		attributes: RippleAttribute[];
 		children: AST.Node[];
 		selfClosing?: boolean;
@@ -267,7 +345,7 @@ declare module 'estree' {
 		innerComments?: Comment[];
 	}
 
-	export interface TextNode extends AST.BaseNode {
+	export interface TextNode extends AST.BaseExpression {
 		type: 'Text';
 		expression: AST.Expression;
 		loc?: AST.SourceLocation;
@@ -285,38 +363,9 @@ declare module 'estree' {
 		};
 	}
 
-	// ScriptContent is only used by Prettier currently
 	interface ScriptContent extends Omit<AST.Element, 'type'> {
 		type: 'ScriptContent';
 		content: string;
-	}
-
-	/**
-	 * Tracked Expressions
-	 */
-	interface TrackedArrayExpression extends Omit<AST.ArrayExpression, 'type'> {
-		type: 'TrackedArrayExpression';
-		elements: (AST.Expression | AST.SpreadElement | null)[];
-	}
-
-	interface TrackedExpression extends AST.BaseNode {
-		argument: AST.Expression;
-		type: 'TrackedExpression';
-	}
-
-	interface TrackedObjectExpression extends Omit<AST.ObjectExpression, 'type'> {
-		type: 'TrackedObjectExpression';
-		properties: (AST.Property | AST.SpreadElement)[];
-	}
-
-	interface TrackedMapExpression extends AST.BaseNode {
-		type: 'TrackedMapExpression';
-		arguments: (AST.Expression | AST.SpreadElement)[];
-	}
-
-	interface TrackedSetExpression extends AST.BaseNode {
-		type: 'TrackedSetExpression';
-		arguments: (AST.Expression | AST.SpreadElement)[];
 	}
 
 	/**
@@ -362,15 +411,28 @@ declare module 'estree' {
 	 * Ripple's extended Program with Component support
 	 */
 	interface RippleProgram extends Omit<Program, 'body'> {
-		body: (Program['body'][number] | Component)[];
+		body: (Program['body'][number] | Component | FunctionExpression)[];
 	}
 
-	export type RippleAttribute = Attribute | SpreadAttribute | RefAttribute;
+	interface RippleMethodDefinition extends Omit<AST.MethodDefinition, 'value'> {
+		value: AST.MethodDefinition['value'] | Component;
+	}
+
+	interface RippleProperty extends Omit<AST.Property, 'value'> {
+		value: AST.Property['value'] | Component;
+	}
+
+	export type RippleAttribute = AST.Attribute | AST.SpreadAttribute | AST.RefAttribute;
+
+	export type RippleStatement = AST.Statement | TSESTree.Statement;
+
+	export type NodeWithChildren = AST.Element | AST.Tsx | AST.TsxCompat;
 
 	export namespace CSS {
-		export interface BaseNode {
+		export interface BaseNode extends AST.NodeWithMaybeComments {
 			start: number;
 			end: number;
+			loc?: AST.SourceLocation;
 		}
 
 		export interface StyleSheet extends BaseNode {
@@ -544,6 +606,9 @@ declare module 'estree-jsx' {
 
 	interface JSXIdentifier {
 		tracked?: boolean;
+		metadata: BaseNodeMetaData & {
+			is_component?: boolean;
+		};
 	}
 
 	interface JSXEmptyExpression {
@@ -563,10 +628,19 @@ declare module 'estree-jsx' {
 
 	interface JSXExpressionContainer {
 		html?: boolean;
+		text?: boolean;
 	}
 
 	interface JSXMemberExpression {
 		computed?: boolean;
+	}
+
+	interface RippleJSXOpeningElement extends Omit<JSXOpeningElement, 'name'> {
+		name: AST.MemberExpression | JSXIdentifier | JSXNamespacedName;
+	}
+
+	interface RippleJSXClosingElement extends Omit<JSXClosingElement, 'name'> {
+		name: AST.MemberExpression | JSXIdentifier | JSXNamespacedName;
 	}
 
 	interface ExpressionMap {
@@ -678,58 +752,59 @@ declare module 'estree' {
 	interface TSArrayType extends Omit<AcornTSNode<TSESTree.TSArrayType>, 'elementType'> {
 		elementType: TypeNode;
 	}
-	interface TSAsExpression extends AcornTSNode<TSESTree.TSAsExpression> {
+	interface TSAsExpression extends Omit<AcornTSNode<TSESTree.TSAsExpression>, 'typeAnnotation'> {
 		// Have to override it to use our Expression for required properties like metadata
 		expression: AST.Expression;
+		typeAnnotation: TypeNode;
 	}
 	interface TSBigIntKeyword extends AcornTSNode<TSESTree.TSBigIntKeyword> {}
 	interface TSBooleanKeyword extends AcornTSNode<TSESTree.TSBooleanKeyword> {}
-	interface TSCallSignatureDeclaration
-		extends Omit<
-			AcornTSNode<TSESTree.TSCallSignatureDeclaration>,
-			'typeParameters' | 'typeAnnotation'
-		> {
+	interface TSCallSignatureDeclaration extends Omit<
+		AcornTSNode<TSESTree.TSCallSignatureDeclaration>,
+		'typeParameters' | 'typeAnnotation'
+	> {
 		parameters: Parameter[];
 		typeParameters: TSTypeParameterDeclaration | undefined;
 		typeAnnotation: TSTypeAnnotation | undefined;
 	}
-	interface TSConditionalType
-		extends Omit<
-			AcornTSNode<TSESTree.TSConditionalType>,
-			'checkType' | 'extendsType' | 'falseType' | 'trueType'
-		> {
+	interface TSConditionalType extends Omit<
+		AcornTSNode<TSESTree.TSConditionalType>,
+		'checkType' | 'extendsType' | 'falseType' | 'trueType'
+	> {
 		checkType: TypeNode;
 		extendsType: TypeNode;
 		falseType: TypeNode;
 		trueType: TypeNode;
 	}
-	interface TSConstructorType
-		extends Omit<AcornTSNode<TSESTree.TSConstructorType>, 'typeParameters' | 'params'> {
+	interface TSConstructorType extends Omit<
+		AcornTSNode<TSESTree.TSConstructorType>,
+		'typeParameters' | 'params'
+	> {
 		typeAnnotation: TSTypeAnnotation | undefined;
 		typeParameters: TSTypeParameterDeclaration | undefined;
 		parameters: AST.Parameter[];
 	}
-	interface TSConstructSignatureDeclaration
-		extends Omit<
-			AcornTSNode<TSESTree.TSConstructSignatureDeclaration>,
-			'typeParameters' | 'typeAnnotation'
-		> {
+	interface TSConstructSignatureDeclaration extends Omit<
+		AcornTSNode<TSESTree.TSConstructSignatureDeclaration>,
+		'typeParameters' | 'typeAnnotation'
+	> {
 		parameters: Parameter[];
 		typeParameters: TSTypeParameterDeclaration | undefined;
 		typeAnnotation: TSTypeAnnotation | undefined;
 	}
-	interface TSDeclareFunction
-		extends Omit<
-			AcornTSNode<TSESTree.TSDeclareFunction>,
-			'id' | 'params' | 'typeParameters' | 'returnType'
-		> {
+	interface TSDeclareFunction extends Omit<
+		AcornTSNode<TSESTree.TSDeclareFunction>,
+		'id' | 'params' | 'typeParameters' | 'returnType'
+	> {
 		id: AST.Identifier;
 		params: Parameter[];
 		typeParameters: TSTypeParameterDeclaration | undefined;
 		returnType: TSTypeAnnotation | undefined;
 	}
-	interface TSEnumDeclaration
-		extends Omit<AcornTSNode<TSESTree.TSEnumDeclaration>, 'id' | 'members'> {
+	interface TSEnumDeclaration extends Omit<
+		AcornTSNode<TSESTree.TSEnumDeclaration>,
+		'id' | 'members'
+	> {
 		id: AST.Identifier;
 		members: TSEnumMember[];
 	}
@@ -737,54 +812,67 @@ declare module 'estree' {
 		id: AST.Identifier | StringLiteral;
 		initializer: AST.Expression | undefined;
 	}
-	interface TSExportAssignment
-		extends Omit<AcornTSNode<TSESTree.TSExportAssignment>, 'expression'> {
+	interface TSExportAssignment extends Omit<
+		AcornTSNode<TSESTree.TSExportAssignment>,
+		'expression'
+	> {
 		expression: AST.Expression;
 	}
-	interface TSExternalModuleReference
-		extends Omit<AcornTSNode<TSESTree.TSExternalModuleReference>, 'expression'> {
+	interface TSExternalModuleReference extends Omit<
+		AcornTSNode<TSESTree.TSExternalModuleReference>,
+		'expression'
+	> {
 		expression: StringLiteral;
 	}
-	interface TSFunctionType
-		extends Omit<AcornTSNode<TSESTree.TSFunctionType>, 'typeParameters' | 'params'> {
+	interface TSFunctionType extends Omit<
+		AcornTSNode<TSESTree.TSFunctionType>,
+		'typeParameters' | 'params'
+	> {
 		typeAnnotation: TSTypeAnnotation | undefined;
 		typeParameters: TSTypeParameterDeclaration | undefined;
 		parameters: Parameter[];
 	}
 	interface TSImportEqualsDeclaration extends AcornTSNode<TSESTree.TSImportEqualsDeclaration> {}
-	interface TSImportType
-		extends Omit<AcornTSNode<TSESTree.TSImportType>, 'argument' | 'qualifier' | 'typeParameters'> {
+	interface TSImportType extends Omit<
+		AcornTSNode<TSESTree.TSImportType>,
+		'argument' | 'qualifier' | 'typeParameters'
+	> {
 		argument: TypeNode;
 		qualifier: EntityName | null;
 		// looks like acorn-typescript has typeParameters
 		typeParameters: TSTypeParameterDeclaration | undefined | undefined;
 	}
-	interface TSIndexedAccessType
-		extends Omit<AcornTSNode<TSESTree.TSIndexedAccessType>, 'indexType' | 'objectType'> {
+	interface TSIndexedAccessType extends Omit<
+		AcornTSNode<TSESTree.TSIndexedAccessType>,
+		'indexType' | 'objectType'
+	> {
 		indexType: TypeNode;
 		objectType: TypeNode;
 	}
-	interface TSIndexSignature
-		extends Omit<AcornTSNode<TSESTree.TSIndexSignature>, 'parameters' | 'typeAnnotation'> {
+	interface TSIndexSignature extends Omit<
+		AcornTSNode<TSESTree.TSIndexSignature>,
+		'parameters' | 'typeAnnotation'
+	> {
 		parameters: AST.Parameter[];
 		typeAnnotation: TSTypeAnnotation | undefined;
 	}
 	interface TSInferType extends Omit<AcornTSNode<TSESTree.TSInferType>, 'typeParameter'> {
 		typeParameter: TSTypeParameter;
 	}
-	interface TSInstantiationExpression
-		extends Omit<AcornTSNode<TSESTree.TSInstantiationExpression>, 'typeArguments' | 'expression'> {
+	interface TSInstantiationExpression extends Omit<
+		AcornTSNode<TSESTree.TSInstantiationExpression>,
+		'typeArguments' | 'expression'
+	> {
 		expression: AST.Expression;
 		typeArguments: TSTypeParameterInstantiation;
 	}
 	interface TSInterfaceBody extends Omit<AcornTSNode<TSESTree.TSInterfaceBody>, 'body'> {
 		body: TypeElement[];
 	}
-	interface TSInterfaceDeclaration
-		extends Omit<
-			AcornTSNode<TSESTree.TSInterfaceDeclaration>,
-			'id' | 'typeParameters' | 'body' | 'extends'
-		> {
+	interface TSInterfaceDeclaration extends Omit<
+		AcornTSNode<TSESTree.TSInterfaceDeclaration>,
+		'id' | 'typeParameters' | 'body' | 'extends'
+	> {
 		id: AST.Identifier;
 		typeParameters: TSTypeParameterDeclaration | undefined;
 		body: TSInterfaceBody;
@@ -797,20 +885,18 @@ declare module 'estree' {
 	interface TSLiteralType extends Omit<AcornTSNode<TSESTree.TSLiteralType>, 'literal'> {
 		literal: AST.Literal | AST.TemplateLiteral;
 	}
-	interface TSMappedType
-		extends Omit<
-			AcornTSNode<TSESTree.TSMappedType>,
-			'typeParameter' | 'typeAnnotation' | 'nameType'
-		> {
+	interface TSMappedType extends Omit<
+		AcornTSNode<TSESTree.TSMappedType>,
+		'typeParameter' | 'typeAnnotation' | 'nameType'
+	> {
 		typeAnnotation: TypeNode | undefined;
 		typeParameter: TSTypeParameter;
 		nameType: TypeNode | null;
 	}
-	interface TSMethodSignature
-		extends Omit<
-			AcornTSNode<TSESTree.TSMethodSignature>,
-			'key' | 'typeParameters' | 'params' | 'typeAnnotation'
-		> {
+	interface TSMethodSignature extends Omit<
+		AcornTSNode<TSESTree.TSMethodSignature>,
+		'key' | 'typeParameters' | 'params' | 'typeAnnotation'
+	> {
 		key: PropertyNameComputed | PropertyNameNonComputed;
 		typeParameters: TSTypeParameterDeclaration | undefined;
 		parameters: Parameter[];
@@ -820,18 +906,24 @@ declare module 'estree' {
 	interface TSModuleBlock extends Omit<AcornTSNode<TSESTree.TSModuleBlock>, 'body'> {
 		body: AST.Statement[];
 	}
-	interface TSModuleDeclaration
-		extends Omit<AcornTSNode<TSESTree.TSModuleDeclaration>, 'body' | 'id'> {
+	interface TSModuleDeclaration extends Omit<
+		AcornTSNode<TSESTree.TSModuleDeclaration>,
+		'body' | 'id'
+	> {
 		body: TSModuleBlock;
 		id: AST.Identifier;
 	}
-	interface TSNamedTupleMember
-		extends Omit<AcornTSNode<TSESTree.TSNamedTupleMember>, 'elementType' | 'label'> {
+	interface TSNamedTupleMember extends Omit<
+		AcornTSNode<TSESTree.TSNamedTupleMember>,
+		'elementType' | 'label'
+	> {
 		elementType: TypeNode;
 		label: AST.Identifier;
 	}
-	interface TSNamespaceExportDeclaration
-		extends Omit<AcornTSNode<TSESTree.TSNamespaceExportDeclaration>, 'id'> {
+	interface TSNamespaceExportDeclaration extends Omit<
+		AcornTSNode<TSESTree.TSNamespaceExportDeclaration>,
+		'id'
+	> {
 		id: AST.Identifier;
 	}
 	interface TSNeverKeyword extends AcornTSNode<TSESTree.TSNeverKeyword> {}
@@ -845,16 +937,17 @@ declare module 'estree' {
 		typeAnnotation: TypeNode;
 	}
 	interface TSParameterProperty extends AcornTSNode<TSESTree.TSParameterProperty> {}
-	interface TSPropertySignatureComputedName
-		extends Omit<AcornTSNode<TSESTree.TSPropertySignatureComputedName>, 'key' | 'typeAnnotation'> {
+	interface TSPropertySignatureComputedName extends Omit<
+		AcornTSNode<TSESTree.TSPropertySignatureComputedName>,
+		'key' | 'typeAnnotation'
+	> {
 		key: PropertyNameComputed;
 		typeAnnotation: TSTypeAnnotation | undefined;
 	}
-	interface TSPropertySignatureNonComputedName
-		extends Omit<
-			AcornTSNode<TSESTree.TSPropertySignatureNonComputedName>,
-			'key' | 'typeAnnotation'
-		> {
+	interface TSPropertySignatureNonComputedName extends Omit<
+		AcornTSNode<TSESTree.TSPropertySignatureNonComputedName>,
+		'key' | 'typeAnnotation'
+	> {
 		key: PropertyNameNonComputed;
 		typeAnnotation: TSTypeAnnotation | undefined;
 	}
@@ -865,8 +958,12 @@ declare module 'estree' {
 	interface TSRestType extends Omit<AcornTSNode<TSESTree.TSRestType>, 'typeAnnotation'> {
 		typeAnnotation: TypeNode;
 	}
-	interface TSSatisfiesExpression extends AcornTSNode<TSESTree.TSSatisfiesExpression> {
+	interface TSSatisfiesExpression extends Omit<
+		AcornTSNode<TSESTree.TSSatisfiesExpression>,
+		'typeAnnotation'
+	> {
 		expression: AST.Expression;
+		typeAnnotation: TypeNode;
 	}
 	interface TSStringKeyword extends AcornTSNode<TSESTree.TSStringKeyword> {}
 	interface TSSymbolKeyword extends AcornTSNode<TSESTree.TSSymbolKeyword> {}
@@ -874,17 +971,18 @@ declare module 'estree' {
 	interface TSTupleType extends Omit<AcornTSNode<TSESTree.TSTupleType>, 'elementTypes'> {
 		elementTypes: TypeNode[];
 	}
-	interface TSTypeAliasDeclaration
-		extends Omit<
-			AcornTSNode<TSESTree.TSTypeAliasDeclaration>,
-			'id' | 'typeParameters' | 'typeAnnotation'
-		> {
+	interface TSTypeAliasDeclaration extends Omit<
+		AcornTSNode<TSESTree.TSTypeAliasDeclaration>,
+		'id' | 'typeParameters' | 'typeAnnotation'
+	> {
 		id: AST.Identifier;
 		typeAnnotation: TypeNode;
 		typeParameters: TSTypeParameterDeclaration | undefined;
 	}
-	interface TSTypeAnnotation
-		extends Omit<AcornTSNode<TSESTree.TSTypeAnnotation>, 'typeAnnotation'> {
+	interface TSTypeAnnotation extends Omit<
+		AcornTSNode<TSESTree.TSTypeAnnotation>,
+		'typeAnnotation'
+	> {
 		typeAnnotation: TypeNode;
 	}
 	interface TSTypeAssertion extends AcornTSNode<TSESTree.TSTypeAssertion> {
@@ -896,31 +994,41 @@ declare module 'estree' {
 	interface TSTypeOperator extends Omit<AcornTSNode<TSESTree.TSTypeOperator>, 'typeAnnotation'> {
 		typeAnnotation: TypeNode | undefined;
 	}
-	interface TSTypeParameter
-		extends Omit<AcornTSNode<TSESTree.TSTypeParameter>, 'name' | 'constraint' | 'default'> {
+	interface TSTypeParameter extends Omit<
+		AcornTSNode<TSESTree.TSTypeParameter>,
+		'name' | 'constraint' | 'default'
+	> {
 		constraint: TypeNode | undefined;
 		default: TypeNode | undefined;
-		name: AST.Identifier;
+		name: string; // for some reason acorn-typescript uses string instead of Identifier
 	}
-	interface TSTypeParameterDeclaration
-		extends Omit<AcornTSNode<TSESTree.TSTypeParameterDeclaration>, 'params'> {
+	interface TSTypeParameterDeclaration extends Omit<
+		AcornTSNode<TSESTree.TSTypeParameterDeclaration>,
+		'params'
+	> {
 		params: TSTypeParameter[];
 		extra?: {
 			trailingComma: number;
 		};
 	}
-	interface TSTypeParameterInstantiation
-		extends Omit<AcornTSNode<TSESTree.TSTypeParameterInstantiation>, 'params'> {
+	interface TSTypeParameterInstantiation extends Omit<
+		AcornTSNode<TSESTree.TSTypeParameterInstantiation>,
+		'params'
+	> {
 		params: TypeNode[];
 	}
 	interface TSTypePredicate extends AcornTSNode<TSESTree.TSTypePredicate> {}
-	interface TSTypeQuery
-		extends Omit<AcornTSNode<TSESTree.TSTypeQuery>, 'exprName' | 'typeArguments'> {
+	interface TSTypeQuery extends Omit<
+		AcornTSNode<TSESTree.TSTypeQuery>,
+		'exprName' | 'typeArguments'
+	> {
 		exprName: EntityName | TSImportType;
 		typeArguments: TSTypeParameterInstantiation | undefined;
 	}
-	interface TSTypeReference
-		extends Omit<AcornTSNode<TSESTree.TSTypeReference>, 'typeName' | 'typeArguments'> {
+	interface TSTypeReference extends Omit<
+		AcornTSNode<TSESTree.TSTypeReference>,
+		'typeName' | 'typeArguments'
+	> {
 		typeArguments: TSTypeParameterInstantiation | undefined;
 		typeName: EntityName;
 	}
@@ -929,8 +1037,10 @@ declare module 'estree' {
 		types: TypeNode[];
 	}
 	// TSInterfaceHeritage doesn't exist in acorn-typescript which uses TSExpressionWithTypeArguments
-	interface TSInterfaceHeritage
-		extends Omit<AcornTSNode<TSESTree.TSInterfaceHeritage>, 'expression' | 'typeParameters'> {
+	interface TSInterfaceHeritage extends Omit<
+		AcornTSNode<TSESTree.TSInterfaceHeritage>,
+		'expression' | 'typeParameters'
+	> {
 		expression: AST.Expression;
 		// acorn-typescript uses typeParameters instead of typeArguments
 		typeParameters: TSTypeParameterInstantiation | undefined;
@@ -961,8 +1071,6 @@ declare module 'estree' {
 	}
 }
 
-import type { Comment, Position } from 'acorn';
-
 /**
  * Parse error information
  */
@@ -984,7 +1092,7 @@ export interface AnalysisResult {
 	ast: AST.Program;
 	scopes: Map<AST.Node, ScopeInterface>;
 	scope: ScopeInterface;
-	component_metadata: Array<{ id: string; async: boolean }>;
+	component_metadata: Array<{ id: string }>;
 	metadata: {
 		serverIdentifierPresent: boolean;
 	};
@@ -1023,6 +1131,8 @@ export type BindingKind =
 	| 'rest_prop'
 	| 'prop'
 	| 'prop_fallback'
+	| 'lazy'
+	| 'lazy_fallback'
 	| 'index';
 
 /**
@@ -1052,7 +1162,7 @@ export interface Binding {
 	metadata: {
 		is_dynamic_component?: boolean;
 		pattern?: AST.Identifier;
-		is_tracked_object?: boolean;
+		is_ripple_object?: boolean;
 	} | null;
 	/** Kind of binding */
 	kind: BindingKind;
@@ -1063,9 +1173,11 @@ export interface Binding {
 	/** Transform functions for reading, assigning, and updating this binding */
 	transform?: {
 		read: (node?: AST.Identifier) => AST.Expression;
-		assign?: (node: AST.Pattern, value: AST.Expression) => AST.AssignmentExpression;
-		update?: (node: AST.UpdateExpression) => AST.UpdateExpression;
+		assign?: (node: AST.Identifier, value: AST.Expression) => AST.Expression;
+		update?: (node: AST.UpdateExpression) => AST.Expression;
 	};
+	/** Whether the read transform already produces an unwrapped value (calls get() internally) */
+	read_unwraps?: boolean;
 }
 
 /**
@@ -1077,6 +1189,25 @@ export interface ScopeRoot {
 	/** Generate unique identifier name */
 	unique(preferred_name: string): AST.Identifier;
 }
+
+export interface ScopeConstructorInterface {
+	root: ScopeRoot;
+	parent: ScopeInterface | null;
+	porous: boolean;
+	error_options: {
+		loose: boolean;
+		errors: RippleCompileError[];
+		filename: string;
+		comments?: AST.CommentWithLocation[];
+	};
+}
+
+export type ScopeConstructorParameters = [
+	root: ScopeConstructorInterface['root'],
+	parent: ScopeConstructorInterface['parent'],
+	porous: ScopeConstructorInterface['porous'],
+	error_options: ScopeConstructorInterface['error_options'],
+];
 
 /**
  * Lexical scope for variable bindings
@@ -1130,7 +1261,6 @@ export interface ScopeInterface {
 
 interface BaseStateMetaData {
 	tracking?: boolean | null;
-	await?: boolean;
 }
 
 export interface BaseState {
@@ -1159,6 +1289,7 @@ export interface AnalysisState extends BaseState {
 	elements?: AST.Element[];
 	function_depth?: number;
 	loose?: boolean;
+	configured_compat_kinds?: Set<string>;
 	metadata: BaseStateMetaData & {
 		styleClasses?: StyleClasses;
 	};
@@ -1175,21 +1306,33 @@ export interface TransformServerState extends BaseState {
 	namespace: NameSpace;
 	server_block_locals: AST.VariableDeclaration[];
 	server_exported_names: string[];
+	dynamicElementName?: AST.TemplateLiteral;
+	applyParentCssScope?: AST.CSS.StyleSheet['hash'];
+	dev?: boolean;
+	return_flags?: Map<AST.ReturnStatement, { name: string; tracked: boolean }>;
+	template_child?: boolean;
+	skip_regular_blocks?: boolean;
+	in_regular_block?: boolean;
 }
 
-type UpdateList = Array<{
-	identity?: AST.Identifier | AST.Expression;
-	initial?: AST.Expression;
-	operation: (expr?: AST.Expression, prev?: AST.Expression) => AST.ExpressionStatement;
-	expression?: AST.Expression;
-	needsPrevTracking?: boolean;
-}> & { async?: boolean };
+type UpdateList = Array<
+	RequireAllOrNone<
+		{
+			identity?: AST.Identifier | AST.Expression;
+			initial?: AST.Expression;
+			operation: (expr?: AST.Expression, prev?: AST.Expression) => AST.ExpressionStatement;
+			expression?: AST.Expression;
+			needsPrevTracking?: boolean;
+		},
+		'initial' | 'identity' | 'expression'
+	>
+>;
 
 export interface TransformClientState extends BaseState {
 	events: Set<string>;
 	filename: string;
 	final: Array<AST.Statement> | null;
-	flush_node: ((is_controlled?: boolean) => AST.Identifier) | null;
+	flush_node: ((is_text?: boolean, is_controlled?: boolean) => AST.Identifier) | null;
 	hoisted: Array<AST.Statement>;
 	imports: Set<string | AST.ImportDeclaration>;
 	server_block_locals: AST.VariableDeclaration[];
@@ -1200,6 +1343,10 @@ export interface TransformClientState extends BaseState {
 	template: Array<string | AST.Expression> | null;
 	update: UpdateList | null;
 	errors: RippleCompileError[];
+	applyParentCssScope?: AST.CSS.StyleSheet['hash'];
+	skip_children_traversal: boolean;
+	return_flags?: Map<AST.ReturnStatement, { name: string; tracked: boolean }>;
+	is_ripple_element?: boolean;
 }
 
 /** Override zimmerframe types and provide our own */
@@ -1225,8 +1372,10 @@ export type Visitors<T extends AST.Node | AST.CSS.Node, U> = T['type'] extends '
 			_?: CatchAllVisitor<T, U, T>;
 		};
 
-export interface Context<T, U>
-	extends Omit<ESRap.Context, 'path' | 'state' | 'visit' | 'next' | 'stop'> {
+export interface Context<T, U> extends Omit<
+	ESRap.Context,
+	'path' | 'state' | 'visit' | 'next' | 'stop'
+> {
 	next: (state?: U) => T | void;
 	path: T[];
 	state: U;

@@ -1,15 +1,19 @@
 {
   "name": "@ripple-ts/playground",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
     "ssr": "node ./ssr-dev.js",
     "build": "vite build --outDir dist/client",
+    "preview": "vite preview --host --outDir dist/client",
     "test": "vitest run",
-    "debug-volar": "node volar-debug.js",
-    "debug-ssr": "node ssr-debug.js",
+    "debug-all": "node debug-mode.js all",
+    "debug-ssr": "node debug-mode.js server",
+    "debug-client": "node debug-mode.js client",
+    "debug-volar": "node debug-mode.js tsx",
+    "debug-tsx": "node debug-mode.js tsx",
     "lint": "eslint ."
   },
   "devDependencies": {

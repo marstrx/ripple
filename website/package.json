@@ -2,6 +2,7 @@
 	"name": "ripple-website",
 	"version": "0.0.0",
 	"description": "",
+	"private": true,
 	"scripts": {
 		"dev": "vitepress dev",
 		"build": "vitepress build",
@@ -12,7 +13,8 @@
 	"license": "MIT",
 	"packageManager": "pnpm@10.18.2",
 	"dependencies": {
-		"livecodes": "catalog:default"
+		"livecodes": "catalog:default",
+		"shiki": "catalog:default"
 	},
 	"devDependencies": {
 		"vitepress": "catalog:default",

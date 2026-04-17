@@ -8,9 +8,9 @@ let init = false;
 /**
  * @template K, V
  * @extends {Map<K, V>}
- * @returns {TrackedMap<K, V>}
+ * @returns {RippleMap<K, V>}
  */
-export class TrackedMap extends Map {
+export class RippleMap extends Map {
 	/** @type {Tracked} */
 	#tracked_size;
 	/** @type {Map<K, Tracked>} */
@@ -24,7 +24,7 @@ export class TrackedMap extends Map {
 	constructor(iterable) {
 		super();
 
-		var block = this.#block = safe_scope();
+		var block = (this.#block = safe_scope());
 
 		if (iterable) {
 			for (var [key, value] of iterable) {
@@ -45,11 +45,11 @@ export class TrackedMap extends Map {
 	 * @returns {void}
 	 */
 	#init() {
-		var proto = TrackedMap.prototype;
+		var proto = RippleMap.prototype;
 		var map_proto = Map.prototype;
 
 		for (const method of introspect_methods) {
-      /** @type {any} */ (proto)[method] = function (/** @type {...any} */ ...v) {
+			/** @type {any} */ (proto)[method] = function (/** @type {...any} */ ...v) {
 				this.size;
 				this.#read_all();
 
@@ -197,9 +197,9 @@ export class TrackedMap extends Map {
 /**
  * @template K, V
  * @param {Block} block
- * @param {...any} args
- * @returns {TrackedMap<K, V>}
+ * @param {Iterable<readonly [K, V]>} [iterable]
+ * @returns {RippleMap<K, V>}
  */
-export function tracked_map(block, ...args) {
-	return with_scope(block, () => new TrackedMap(...args));
+export function ripple_map(block, iterable) {
+	return with_scope(block, () => new RippleMap(iterable));
 }

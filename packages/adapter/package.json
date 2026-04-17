@@ -1,0 +1,34 @@
+{
+  "name": "@ripple-ts/adapter",
+  "description": "Shared adapter primitives for Ripple metaframework adapters",
+  "license": "MIT",
+  "author": "Dominic Gannaway",
+  "version": "0.3.13",
+  "type": "module",
+  "module": "src/index.js",
+  "main": "src/index.js",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    },
+    "./rpc": {
+      "types": "./types/rpc.d.ts",
+      "import": "./src/rpc.js",
+      "default": "./src/rpc.js"
+    }
+  },
+  "scripts": {
+    "test": "pnpm -w test --project adapter"
+  },
+  "homepage": "https://ripple-ts.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ripple-TS/ripple.git",
+    "directory": "packages/adapter"
+  },
+  "bugs": {
+    "url": "https://github.com/Ripple-TS/ripple/issues"
+  }
+}

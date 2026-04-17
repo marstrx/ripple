@@ -2,9 +2,8 @@ import { createRequire } from 'module';
 import noModuleScopeTrack from './rules/no-module-scope-track.js';
 import preferOnInput from './rules/prefer-oninput.js';
 import noReturnInComponent from './rules/no-return-in-component.js';
-import unboxTrackedValues from './rules/unbox-tracked-values.js';
 import controlFlowJsx from './rules/control-flow-jsx.js';
-import noIntrospectInModules from './rules/no-introspect-in-modules.js';
+import noLazyDestructuringInModules from './rules/no-lazy-destructuring-in-modules.js';
 import validForOfKey from './rules/valid-for-of-key.js';
 
 const plugin = {
@@ -16,9 +15,8 @@ const plugin = {
 		'no-module-scope-track': noModuleScopeTrack,
 		'prefer-oninput': preferOnInput,
 		'no-return-in-component': noReturnInComponent,
-		'unbox-tracked-values': unboxTrackedValues,
 		'control-flow-jsx': controlFlowJsx,
-		'no-introspect-in-modules': noIntrospectInModules,
+		'no-lazy-destructuring-in-modules': noLazyDestructuringInModules,
 		'valid-for-of-key': validForOfKey,
 	},
 	configs: {} as any,
@@ -56,9 +54,8 @@ function createConfig(name: string, files: string[], parser: any) {
 			'ripple/no-module-scope-track': 'error',
 			'ripple/prefer-oninput': 'warn',
 			'ripple/no-return-in-component': 'error',
-			'ripple/unbox-tracked-values': 'error',
 			'ripple/control-flow-jsx': 'error',
-			'ripple/no-introspect-in-modules': 'error',
+			'ripple/no-lazy-destructuring-in-modules': 'error',
 			'ripple/valid-for-of-key': 'error',
 		},
 	};
@@ -79,7 +76,7 @@ function createConfig(name: string, files: string[], parser: any) {
 
 // Recommended configuration (flat config format)
 plugin.configs.recommended = [
-	createConfig('ripple/recommended-ripple-files', ['**/*.ripple'], rippleParser),
+	createConfig('ripple/recommended-ripple-files', ['**/*.{ripple,tsrx}'], rippleParser),
 	createConfig('ripple/recommended-typescript-files', ['**/*.ts', '**/*.tsx'], tsParser),
 	{
 		name: 'ripple/ignores',
@@ -89,7 +86,7 @@ plugin.configs.recommended = [
 
 // Strict configuration (flat config format)
 plugin.configs.strict = [
-	createConfig('ripple/strict-ripple-files', ['**/*.ripple'], rippleParser),
+	createConfig('ripple/strict-ripple-files', ['**/*.{ripple,tsrx}'], rippleParser),
 	createConfig('ripple/strict-typescript-files', ['**/*.ts', '**/*.tsx'], tsParser),
 	{
 		name: 'ripple/ignores',

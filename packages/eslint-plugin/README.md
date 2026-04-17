@@ -1,8 +1,13 @@
 # @ripple-ts/eslint-plugin
 
-ESLint plugin for [Ripple](https://ripplejs.com) - helps enforce best practices and catch common mistakes when writing Ripple applications.
+[![npm version](https://img.shields.io/npm/v/%40ripple-ts%2Feslint-plugin?logo=npm)](https://www.npmjs.com/package/@ripple-ts/eslint-plugin)
+[![npm downloads](https://img.shields.io/npm/dm/%40ripple-ts%2Feslint-plugin?logo=npm&label=downloads)](https://www.npmjs.com/package/@ripple-ts/eslint-plugin)
 
-Works just like `eslint-plugin-react` - simply install and use the recommended config!
+ESLint plugin for [Ripple](https://ripplejs.com) - helps enforce best practices
+and catch common mistakes when writing Ripple applications.
+
+Works just like `eslint-plugin-react` - simply install and use the recommended
+config!
 
 ## Installation
 
@@ -27,10 +32,13 @@ export default [...ripple.configs.recommended];
 
 The plugin automatically:
 
-- Detects and uses `@ripple-ts/eslint-parser` if installed for `.ripple` files
+- Detects and uses `@ripple-ts/eslint-parser` if installed for `.tsrx` and
+  `.ripple` files
 - Detects and uses `@typescript-eslint/parser` if installed for `.ts`/`.tsx` files
-- Excludes `.d.ts` files, `node_modules`, `dist`, and `build` directories from linting
-- Works with both `.ts`/`.tsx` and `.ripple` files
+- Excludes `.d.ts` files, `node_modules`, `dist`, and `build` directories from
+  linting
+- Works with both `.ts`/`.tsx` and Ripple component files (`.tsrx` by default,
+  plus `.ripple`)
 
 ### Legacy Config (.eslintrc)
 
@@ -45,7 +53,8 @@ The plugin automatically:
 
 ### `recommended`
 
-The recommended configuration enables all rules at their default severity levels (errors and warnings).
+The recommended configuration enables all rules at their default severity levels
+(errors and warnings).
 
 ```js
 import ripple from '@ripple-ts/eslint-plugin';
@@ -77,7 +86,8 @@ export default [
 
 ### `ripple/no-module-scope-track` (error)
 
-Prevents calling `track()` at module scope. Tracked values must be created within a component context.
+Prevents calling `track()` at module scope. Tracked values must be created within
+a component context.
 
 ❌ **Incorrect:**
 
@@ -107,7 +117,8 @@ export component App() {
 
 ### `ripple/require-component-export` (warning)
 
-Warns when capitalized components are not exported. This helps ensure components are reusable across modules.
+Warns when capitalized components are not exported. This helps ensure components
+are reusable across modules.
 
 ❌ **Incorrect:**
 
@@ -128,7 +139,8 @@ export component MyButton() {
 
 ### `ripple/prefer-oninput` (warning, fixable)
 
-Recommends using `onInput` instead of `onChange` for form inputs. Unlike React, Ripple doesn't have synthetic events, so `onInput` is the correct event handler.
+Recommends using `onInput` instead of `onChange` for form inputs. Unlike React,
+Ripple doesn't have synthetic events, so `onInput` is the correct event handler.
 
 ❌ **Incorrect:**
 
@@ -146,7 +158,8 @@ This rule is auto-fixable with `--fix`.
 
 ### `ripple/no-return-in-component` (error)
 
-Prevents returning JSX from Ripple components. In Ripple, JSX should be used as statements, not expressions.
+Prevents returning JSX from Ripple components. In Ripple, JSX should be used as
+statements, not expressions.
 
 ❌ **Incorrect:**
 
@@ -164,44 +177,22 @@ export component App() {
 }
 ```
 
-### `ripple/unbox-tracked-values` (error)
+### `ripple/no-lazy-destructuring-in-modules` (error)
 
-Ensures tracked values are unboxed with the `@` operator when used in JSX expressions.
-
-❌ **Incorrect:**
-
-```js
-export component App() {
-  let count = track(0);
-
-  // Missing @ operator
-  <div>{count}</div>
-}
-```
-
-✅ **Correct:**
-
-```js
-export component App() {
-  let count = track(0);
-
-  // Properly unboxed with @
-  <div>{@count}</div>
-}
-```
-
-### `ripple/no-introspect-in-modules` (error)
-
-Prevents using the `@` introspection operator in TypeScript/JavaScript modules. In `.ts`/`.js` files, you should use `get()` and `set()` functions instead.
+Prevents using lazy destructuring (`&[]` / `&{}`) in TypeScript/JavaScript
+modules. In `.ts`/`.js` files, you should use `.value` to read and write tracked
+values instead.
 
 ❌ **Incorrect:**
 
 ```ts
 // count.ts
+import { track, effect } from 'ripple';
+
 export function useCount() {
-  const count = track(1);
+  const &[count] = track(1);
   effect(() => {
-    console.log(@count); // Error: Cannot use @ in TypeScript modules
+    console.log(count); // Error: Cannot use &[] in TypeScript modules
   });
   return { count };
 }
@@ -211,23 +202,25 @@ export function useCount() {
 
 ```ts
 // count.ts
-import { get, set } from 'ripple';
+import { track, effect } from 'ripple';
 
 export function useCount() {
   const count = track(1);
 
-  // Use get() to read tracked values
-  const double = derived(() => get(count) * 2);
+  // Use .value to read tracked values
+  const double = track(() => count.value * 2);
 
   effect(() => {
-    console.log('count is', get(count));
+    console.log('count is', count.value);
   });
 
   return { count, double };
 }
 ```
 
-**Note:** The `@` operator is only valid in `.ripple` component files. In TypeScript modules, use `get()` to read values and `set()` to update them.
+**Note:** Lazy destructuring (`&[]` / `&{}`) is only valid in Ripple component
+files (`.tsrx` by default, plus `.ripple`). In TypeScript modules, use `.value` to
+read and write tracked values.
 
 ## Custom Configuration
 
@@ -242,14 +235,14 @@ export default [
       'ripple/require-component-export': 'off', // Disable this rule
       'ripple/prefer-oninput': 'error', // Make this an error instead of warning
       'ripple/no-return-in-component': 'error',
-      'ripple/unbox-tracked-values': 'error',
-      'ripple/no-introspect-in-modules': 'error',
+      'ripple/no-lazy-destructuring-in-modules': 'error',
     },
   },
 ];
 ```
 
-The plugin will automatically detect and use the Ripple parser for your `.ripple` files.
+The plugin will automatically detect and use the Ripple parser for your Ripple
+component files, including `.tsrx` and `.ripple`.
 
 ## License
 
@@ -262,5 +255,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## Related
 
 - [Ripple](https://ripplejs.com) - The Ripple framework
-- [@ripple-ts/vite-plugin](https://www.npmjs.com/package/@ripple-ts/vite-plugin) - Vite plugin for Ripple
-- [@ripple-ts/prettier-plugin](https://www.npmjs.com/package/@ripple-ts/prettier-plugin) - Prettier plugin for Ripple
+- [@ripple-ts/vite-plugin](https://www.npmjs.com/package/@ripple-ts/vite-plugin) -
+  Vite plugin for Ripple
+- [@ripple-ts/prettier-plugin](https://www.npmjs.com/package/@ripple-ts/prettier-plugin) -
+  Prettier plugin for Ripple

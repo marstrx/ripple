@@ -4,7 +4,7 @@ import type {
 	Mapping as VolarMapping,
 } from '@volar/language-core';
 import type { DocumentHighlightKind } from 'vscode-languageserver-types';
-import type { SourceMapMappings } from '@jridgewell/sourcemap-codec';
+import type { RawSourceMap } from 'source-map';
 
 // ============================================================================
 // Compiler API Exports
@@ -18,7 +18,7 @@ export interface CompileResult {
 	/** The generated JavaScript code with source map */
 	js: {
 		code: string;
-		map: SourceMapMappings;
+		map: RawSourceMap;
 	};
 	/** The generated CSS */
 	css: string;
@@ -38,11 +38,7 @@ export interface PluginActionOverrides {
 	/** TypeScript diagnostic codes to suppress for this mapping */
 	suppressedDiagnostics?: number[];
 	/** Custom hover documentation for this mapping, false to disable */
-	hover?:
-		| {
-				contents: string;
-		  }
-		| false;
+	hover?: string | false | ((content: string) => string);
 	/** Custom definition info for this mapping, false to disable */
 	definition?:
 		| {
@@ -62,7 +58,6 @@ export interface PluginActionOverrides {
 }
 
 export interface CustomMappingData extends PluginActionOverrides {
-	generatedLengths: number[];
 	embeddedId?: string; // e.g. css regions: 'style_0', 'style_1', etc.
 	content?: string; // (e.g., css code)
 }
@@ -71,7 +66,8 @@ export interface MappingData extends VolarCodeInformation {
 	customData: CustomMappingData;
 }
 
-export interface CodeMapping extends VolarMapping<MappingData> {
+export interface CodeMapping extends Omit<VolarMapping<MappingData>, 'generatedLengths'> {
+	generatedLengths: number[];
 	data: MappingData;
 }
 
@@ -97,9 +93,12 @@ export interface RippleCompileError extends Error {
 
 interface SharedCompileOptions {
 	minify_css?: boolean;
+	dev?: boolean;
 }
 export interface CompileOptions extends SharedCompileOptions {
 	mode?: 'client' | 'server';
+	hmr?: boolean;
+	compat_kinds?: string[];
 }
 
 export interface ParseOptions {
@@ -108,14 +107,14 @@ export interface ParseOptions {
 	comments?: AST.CommentWithLocation[];
 }
 
-export interface AnalyzeOptions extends ParseOptions, Pick<CompileOptions, 'mode'> {
+export interface AnalyzeOptions
+	extends ParseOptions, Pick<CompileOptions, 'mode' | 'compat_kinds'> {
 	errors?: RippleCompileError[];
 	to_ts?: boolean;
 }
 
 export interface VolarCompileOptions
-	extends Omit<ParseOptions, 'errors' | 'comments'>,
-		SharedCompileOptions {}
+	extends Omit<ParseOptions, 'errors' | 'comments'>, SharedCompileOptions {}
 
 export function parse(source: string, options?: ParseOptions): AST.Program;
 

@@ -26,6 +26,34 @@ export component Truthy({ x }) {
 
 </Code>
 
+## Early return (guard clauses)
+
+You can pair `if` blocks with `return;` to short-circuit the rest of the
+component body once a guard branch is hit.
+
+<Code>
+
+```ripple
+import { track } from 'ripple';
+
+export component AuthGate() {
+  let &[is_logged_in] = track(false);
+
+  if (!is_logged_in) {
+    <p>{'Please sign in.'}</p>
+    return;
+  }
+
+  <h1>{'Dashboard'}</h1>
+  <p>{'Private content'}</p>
+}
+```
+
+</Code>
+
+`return` in components is only valid as `return;`. Returning a value (including
+templates) is invalid.
+
 ## Switch statements
 
 Switch statements let you conditionally render content based on a value. They work with both static and reactive values.
@@ -64,13 +92,13 @@ You can also use reactive values with switch statements.
 import { track } from 'ripple';
 
 export component InteractiveStatus() {
-  let status = track('loading');
+  let &[status] = track('loading');
 
-  <button onClick={() => @status = 'success'}>{'Success'}</button>
-  <button onClick={() => @status = 'error'}>{'Error'}</button>
+  <button onClick={() => status = 'success'}>{'Success'}</button>
+  <button onClick={() => status = 'error'}>{'Error'}</button>
 
   <div>
-    switch (@status) {
+    switch (status) {
       case 'init':
          <p>{'Init'}</p>
          // fall-through to the next
@@ -143,7 +171,7 @@ You can also provide a `key` for efficient list updates and reconciliation:
 
 **Key Usage Guidelines:**
 
-- **Arrays with `#{}` objects**: Keys are usually unnecessary - object identity and reactivity handle updates automatically. Identity-based loops are more efficient with less bookkeeping.
+- **Arrays with `RippleObject` objects**: Keys are usually unnecessary - object identity and reactivity handle updates automatically. Identity-based loops are more efficient with less bookkeeping.
 - **Arrays with plain objects**: Keys are needed when object reference isn't sufficient for identification. Use stable identifiers: `key item.id`.
 
 You can use Ripple's reactive arrays to easily compose contents of an array.
@@ -151,10 +179,10 @@ You can use Ripple's reactive arrays to easily compose contents of an array.
 <Code>
 
 ```ripple
-import { TrackedArray } from 'ripple';
+import { RippleArray } from 'ripple';
 
 export component Numbers() {
-  const array = new TrackedArray(1, 2, 3);
+  const array = new RippleArray(1, 2, 3);
 
   for (const item of array; index i) {
     <div>{item}{' at index '}{i}</div>
@@ -200,22 +228,81 @@ export component ErrorBoundary() {
 You can render dynamic HTML elements by storing the tag name in a tracked variable and using the `<@tagName>` syntax:
 
 ```ripple
+import { track } from 'ripple';
+
 export component App() {
-	let tag = track('div');
+	let &[tag] = track('div');
 
 	<@tag class="dynamic">{'Hello World'}</@tag>
-	<button onClick={() => @tag = @tag === 'div' ? 'span' : 'div'}>{'Toggle Element'}</button>
+	<button onClick={() => tag = tag === 'div' ? 'span' : 'div'}>{'Toggle Element'}</button>
 }
 ```
 
 ## Async (Suspense boundaries) <Badge type="warning" text="Experimental" />
 
+Components can use `await` directly in their body — no `async` keyword needed.
+Everything before the first `await` renders immediately; everything after
+suspends until the promise resolves.
+
 ```ripple
-export component SuspenseBoundary() {
-	try {
-		<AsyncComponent />
-	} pending {
-		<p>{'Loading...'}</p> // fallback
-	}
+component UserProfile({ id }: { id: number }) {
+  // Renders immediately
+  <h1>{'Loading profile...'}</h1>
+
+  // Suspends here until resolved
+  const user = await fetchUser(id);
+
+  // Renders after resolution
+  <h1>{user.name}</h1>
+  <p>{user.email}</p>
 }
 ```
+
+Wrap the component in a `try/pending` block to handle the suspended state:
+
+```ripple
+export component App() {
+  try {
+    <UserProfile id={1} />
+  } pending {
+    <p>{'Loading...'}</p>
+  } catch (e) {
+    <p>{'Error: '}{e.message}</p>
+  }
+}
+```
+
+The `{pending}` clause shows while the component is suspended. The `{catch}`
+clause handles both sync throws and async rejections. Both clauses are optional
+and can be used independently.
+
+### Reactive async with `await track(fn)`
+
+For async operations that should re-run when reactive dependencies change, use
+`await track(fn)`. Any tracked values read inside the function become
+dependencies — when they change the operation re-runs and the component
+re-suspends to the nearest `try/pending` boundary.
+
+```ripple
+import { track } from 'ripple';
+
+export component CitySearch() {
+  let &[query] = track('');
+
+  // Renders immediately, never suspended
+  <input type="text" value={query} onInput={e => query = e.target.value} />
+
+  // Re-runs and re-suspends whenever query changes
+  const city = await track(() => fetchCity(query));
+
+  // Only renders once city has resolved for the current query
+  <p>{'Showing: '}{query}</p>
+  <CityCard city={city} />
+}
+```
+
+::: info Note
+When `query` changes, everything above the `await track` line stays visible.
+Only the content below re-suspends and shows `{pending}` until the new fetch
+resolves.
+:::

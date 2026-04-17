@@ -7,9 +7,10 @@ title: Components in Ripple
 ## Lifecycle
 
 ::: details Glossary
+
 - **Pure**: The idea that a function should produce no side-effects.
 - **Side-effect**: A permanent, externally observable state change.
-:::
+  :::
 
 Ripple's component lifecycle is akin to Vue/Svelte/Solid. The root scope of your
 component only runs once, akin to the "setup" scope in Vue/Svelte/Solid. However,
@@ -22,15 +23,15 @@ within `effect()` to ensure they only run when intended.
 
 To pass elements to be nested within a component, simply nest them as you would
 write HTML. By default, Ripple will make the content available as the
-`children` prop, which you can then render using `<props.children />` (or simply
-`<children />` if you destructured your props).
+`children` prop, which you can then render using `{props.children}` (or simply
+`{children}` if you destructured your props).
 
 ```ripple
-import type { Component } from 'ripple';
+import type { Children } from 'ripple';
 
-component Card(props: { children: Component }) {
+component Card(props: { children: Children }) {
 	<div class="card">
-		<props.children />
+		{props.children}
 	</div>
 }
 
@@ -40,12 +41,12 @@ export component App() {
 		<p>{"Card content here"}</p>
 	</Card>
 
-	// or explicitly!
-	<Card>
-		component children() {
-			<p>{"Card content here"}</p>
-		}
-	</Card>
+	// or pass children explicitly as a prop.
+	component children() {
+		<p>{"Card content here"}</p>
+	}
+
+	<Card {children} />
 }
 ```
 
@@ -97,7 +98,7 @@ component Card({ children, Header, Footer }) {
 	<fieldset>
 		<Header />
 		<hr />
-		<children />
+		{children}
 		<hr />
 		<Footer />
 	</fieldset>

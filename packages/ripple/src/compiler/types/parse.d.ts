@@ -14,8 +14,8 @@ import type * as acorn from 'acorn';
 import type * as AST from 'estree';
 import type * as ESTreeJSX from 'estree-jsx';
 import type * as ESRap from 'esrap';
-import type * as SourceMap from '@jridgewell/sourcemap-codec';
 import type * as RippleCompiler from '#compiler';
+import type { RawSourceMap } from 'source-map';
 import type { RippleCompileError } from 'ripple/compiler';
 
 type ForInit = boolean | 'await';
@@ -29,6 +29,7 @@ declare module 'acorn' {
 		line: number;
 		column: number;
 		constructor(line: number, column: number);
+		offset(offset: number): Position;
 	}
 	function isNewLine(code: number): boolean;
 
@@ -42,7 +43,7 @@ declare module 'esrap' {
 		ast: AST.Node,
 		visitors: V,
 		options?: ESRap.PrintOptions,
-	): { code: string; map: SourceMap.SourceMapMappings };
+	): { code: string; map: RawSourceMap };
 }
 
 declare module 'esrap/languages/tsx' {
@@ -542,8 +543,6 @@ export namespace Parse {
 		 */
 		finishToken(type: TokenType, val?: string | number | RegExp | bigint): void;
 
-		readAtIdentifier(): void;
-
 		/**
 		 * Read a token based on character code
 		 * Called by nextToken() for each character
@@ -925,16 +924,7 @@ export namespace Parse {
 			refDestructuringErrors?: DestructuringErrors,
 			forInit?: ForInit,
 			forNew?: boolean,
-		):
-			| AST.ServerIdentifier
-			| AST.StyleIdentifier
-			| AST.TrackedExpression
-			| AST.TrackedMapExpression
-			| AST.TrackedSetExpression
-			| AST.TrackedArrayExpression
-			| AST.TrackedObjectExpression
-			| AST.Component
-			| AST.Identifier;
+		): AST.ServerIdentifier | AST.StyleIdentifier | AST.Component | AST.Identifier | AST.Literal;
 
 		/** Default handler for parseExprAtom when no other case matches */
 		parseExprAtomDefault(): AST.Expression;
@@ -953,16 +943,6 @@ export namespace Parse {
 
 		/** Parse parenthesized expression (just the expression) */
 		parseParenExpression(): AST.Expression;
-
-		parseTrackedCollectionExpression(
-			type: 'TrackedMapExpression' | 'TrackedSetExpression',
-		): AST.TrackedMapExpression | AST.TrackedSetExpression;
-
-		parseTrackedArrayExpression(): AST.TrackedArrayExpression;
-
-		parseTrackedExpression(): AST.TrackedExpression;
-
-		parseTrackedObjectExpression(): AST.TrackedObjectExpression;
 
 		/**
 		 * Parse item in parentheses (can be overridden for flow/ts)
@@ -1130,6 +1110,10 @@ export namespace Parse {
 
 		tsCheckTypeAnnotationForReadOnly(node: AST.TSTypeOperator): void;
 
+		tsParseTypeArguments(): AST.Node;
+
+		tsTryParseTypeAnnotation(): AST.TSTypeAnnotation;
+
 		/**
 		 * Get property kind from name
 		 * @param prop Property node
@@ -1184,7 +1168,7 @@ export namespace Parse {
 
 		parseServerBlock(): AST.ServerBlock;
 
-		parseElement(): AST.Element | AST.TsxCompat;
+		parseElement(): AST.Element | AST.Tsx | AST.TsxCompat;
 
 		parseTemplateBody(
 			body: (AST.Statement | AST.Node | ESTreeJSX.JSXText | ESTreeJSX.JSXElement['children'])[],
@@ -1196,6 +1180,7 @@ export namespace Parse {
 						requireName?: boolean;
 						isDefault?: boolean;
 						declareName?: boolean;
+						skipName?: boolean;
 				  }
 				| undefined,
 		): AST.Component;
@@ -1212,6 +1197,8 @@ export namespace Parse {
 			topLevel?: boolean,
 			exports?: AST.ExportSpecifier,
 		):
+			| AST.RippleExpression
+			| AST.Html
 			| AST.TextNode
 			| ESTreeJSX.JSXEmptyExpression
 			| ESTreeJSX.JSXExpressionContainer

@@ -7,7 +7,7 @@ import { build_assignment_value, extract_paths } from '../utils/ast.js';
 import * as b from '../utils/builders.js';
 import { is_capture_event, is_non_delegated, normalize_event_name } from '../utils/events.js';
 
-const regex_return_characters = /\r/g;
+export { hash } from '../utils/hashing.js';
 
 const VOID_ELEMENT_NAMES = [
 	'area',
@@ -163,6 +163,24 @@ const DOM_PROPERTIES = [
 	'disableRemotePlayback',
 ];
 
+// Omits track, trackSplit and trackAsync are they're handled separately
+/** @type {Record<string, {name: string, requiresBlock?: boolean}>} */
+const RIPPLE_IMPORT_CALL_NAME = {
+	RippleArray: { name: 'ripple_array', requiresBlock: true },
+	RippleObject: { name: 'ripple_object', requiresBlock: true },
+	RippleURL: { name: 'ripple_url', requiresBlock: true },
+	RippleURLSearchParams: { name: 'ripple_url_search_params', requiresBlock: true },
+	RippleDate: { name: 'ripple_date', requiresBlock: true },
+	RippleMap: { name: 'ripple_map', requiresBlock: true },
+	RippleSet: { name: 'ripple_set', requiresBlock: true },
+	MediaQuery: { name: 'media_query', requiresBlock: true },
+	Context: { name: 'context' },
+	effect: { name: 'effect' },
+	untrack: { name: 'untrack' },
+	trackPending: { name: 'is_tracked_pending' },
+	peek: { name: 'peek_tracked' },
+};
+
 /**
  * Returns true if name is a DOM property
  * @param {string} name
@@ -190,31 +208,6 @@ export function is_delegated_event(event_name, handler, context) {
 			!is_declared_function_within_component(/** @type {AST.Identifier}*/ (handler), context))
 	) {
 		return false;
-	}
-	return true;
-}
-
-/**
- * Returns true if context is inside a top-level await: inside component or module
- * @param {CommonContext} context
- * @returns {boolean}
- */
-export function is_top_level_await(context) {
-	for (let i = context.path.length - 1; i >= 0; i -= 1) {
-		const context_node = context.path[i];
-		const type = context_node.type;
-
-		if (context_node.type === 'Component') {
-			return true;
-		}
-
-		if (
-			type === 'FunctionExpression' ||
-			type === 'ArrowFunctionExpression' ||
-			type === 'FunctionDeclaration'
-		) {
-			return false;
-		}
 	}
 	return true;
 }
@@ -274,24 +267,31 @@ export function is_component_level_function(context) {
 }
 
 /**
- * Returns true if callee is a Ripple track call
+ * Returns the matched Ripple tracking call name
  * @param {AST.Expression | AST.Super} callee
  * @param {CommonContext} context
- * @returns {boolean}
+ * @returns {'track' | 'trackAsync' | null}
  */
 export function is_ripple_track_call(callee, context) {
 	// Super expressions cannot be Ripple track calls
-	if (callee.type === 'Super') return false;
+	if (callee.type === 'Super') return null;
 
-	return (
-		(callee.type === 'Identifier' && (callee.name === 'track' || callee.name === 'trackSplit')) ||
-		(callee.type === 'MemberExpression' &&
-			callee.object.type === 'Identifier' &&
-			callee.property.type === 'Identifier' &&
-			(callee.property.name === 'track' || callee.property.name === 'trackSplit') &&
-			!callee.computed &&
-			is_ripple_import(callee, context))
-	);
+	if (callee.type === 'Identifier' && (callee.name === 'track' || callee.name === 'trackAsync')) {
+		return is_ripple_import(callee, context) ? callee.name : null;
+	}
+
+	if (
+		callee.type === 'MemberExpression' &&
+		callee.object.type === 'Identifier' &&
+		callee.property.type === 'Identifier' &&
+		(callee.property.name === 'track' || callee.property.name === 'trackAsync') &&
+		!callee.computed &&
+		is_ripple_import(callee, context)
+	) {
+		return callee.property.name;
+	}
+
+	return null;
 }
 
 /**
@@ -556,20 +556,6 @@ export function escape_html(value, is_attr = false) {
 }
 
 /**
- * Hashes a string to a base36 value
- * @param {string} str
- * @returns {string}
- */
-export function hash(str) {
-	str = str.replace(regex_return_characters, '');
-	let hash = 5381;
-	let i = str.length;
-
-	while (i--) hash = ((hash << 5) - hash) ^ str.charCodeAt(i);
-	return (hash >>> 0).toString(36);
-}
-
-/**
  * Returns true if node is a DOM element (not a component)
  * @param {AST.Node} node
  * @returns {boolean}
@@ -582,6 +568,27 @@ export function is_element_dom_element(node) {
 		id.name !== 'children' &&
 		!id.tracked
 	);
+}
+
+/**
+ * Returns true if element is a dynamic element
+ * @param {AST.Element} node
+ * @returns {boolean}
+ */
+export function is_element_dynamic(node) {
+	return is_id_dynamic(node.id);
+}
+
+/**
+ * @param {AST.Identifier | AST.MemberExpression | AST.Literal} node
+ * @returns {boolean}
+ */
+function is_id_dynamic(node) {
+	if (node.type === 'Identifier') {
+		return !!node.tracked;
+	}
+
+	return false;
 }
 
 /**
@@ -602,7 +609,22 @@ export function normalize_children(children, context) {
 		const child = normalized[i];
 		const prev_child = normalized[i - 1];
 
-		if (child.type === 'Text' && prev_child?.type === 'Text') {
+		if (
+			(child.type === 'RippleExpression' || child.type === 'Text') &&
+			(prev_child?.type === 'RippleExpression' || prev_child?.type === 'Text')
+		) {
+			if (
+				(child.type === 'RippleExpression' &&
+					is_children_template_expression(child.expression, context.state.scope)) ||
+				(prev_child.type === 'RippleExpression' &&
+					is_children_template_expression(prev_child.expression, context.state.scope))
+			) {
+				continue;
+			}
+
+			if (prev_child.type === 'Text' || child.type === 'Text') {
+				prev_child.type = 'Text';
+			}
 			if (child.expression.type === 'Literal' && prev_child.expression.type === 'Literal') {
 				prev_child.expression = b.literal(
 					prev_child.expression.value + String(child.expression.value),
@@ -619,6 +641,91 @@ export function normalize_children(children, context) {
 	}
 
 	return normalized;
+}
+
+/**
+ * @param {AST.Expression} expression
+ * @returns {AST.Expression}
+ */
+export function unwrap_template_expression(expression) {
+	/** @type {AST.Expression} */
+	let node = expression;
+
+	while (true) {
+		if (
+			node.type === 'ParenthesizedExpression' ||
+			node.type === 'TSAsExpression' ||
+			node.type === 'TSSatisfiesExpression' ||
+			node.type === 'TSNonNullExpression' ||
+			node.type === 'TSInstantiationExpression'
+		) {
+			node = /** @type {AST.Expression} */ (node.expression);
+			continue;
+		}
+
+		if (node.type === 'ChainExpression') {
+			node = /** @type {AST.Expression} */ (node.expression);
+			continue;
+		}
+
+		break;
+	}
+
+	return node;
+}
+
+/**
+ * @param {AST.Expression} expression
+ * @param {ScopeInterface | null | undefined} scope
+ * @param {ScopeInterface | null} [component_scope]
+ * @returns {boolean}
+ */
+export function is_children_template_expression(expression, scope, component_scope = null) {
+	if (scope == null) {
+		return false;
+	}
+
+	const unwrapped = unwrap_template_expression(expression);
+
+	if (unwrapped.type === 'MemberExpression') {
+		let property_name = null;
+
+		if (!unwrapped.computed && unwrapped.property.type === 'Identifier') {
+			property_name = unwrapped.property.name;
+		} else if (
+			unwrapped.computed &&
+			unwrapped.property.type === 'Literal' &&
+			typeof unwrapped.property.value === 'string'
+		) {
+			property_name = unwrapped.property.value;
+		}
+
+		if (property_name === 'children') {
+			const target = unwrap_template_expression(/** @type {AST.Expression} */ (unwrapped.object));
+
+			if (target.type === 'Identifier') {
+				const binding = scope.get(target.name);
+				return (
+					binding?.declaration_kind === 'param' &&
+					(component_scope === null || binding.scope === component_scope)
+				);
+			}
+		}
+	}
+
+	if (unwrapped.type !== 'Identifier' || unwrapped.name !== 'children') {
+		return false;
+	}
+
+	const binding = scope.get(unwrapped.name);
+	return (
+		(binding?.declaration_kind === 'param' ||
+			binding?.kind === 'prop' ||
+			binding?.kind === 'prop_fallback' ||
+			binding?.kind === 'lazy' ||
+			binding?.kind === 'lazy_fallback') &&
+		(component_scope === null || binding.scope === component_scope)
+	);
 }
 
 /**
@@ -641,6 +748,52 @@ function normalize_child(node, normalized, context) {
 		return;
 	} else {
 		normalized.push(node);
+	}
+}
+
+/**
+ * Replaces any lazy subpatterns in a parameter pattern with their generated identifiers.
+ * This is used by client and server transforms so nested lazy destructuring can coexist
+ * with otherwise normal object/array params.
+ * @param {AST.Pattern} pattern
+ * @returns {AST.Pattern}
+ */
+export function replace_lazy_param_pattern(pattern) {
+	switch (pattern.type) {
+		case 'AssignmentPattern':
+			return { ...pattern, left: replace_lazy_param_pattern(pattern.left) };
+
+		case 'ObjectPattern':
+			if (pattern.lazy && pattern.metadata?.lazy_id) {
+				return /** @type {AST.Pattern} */ (b.id(pattern.metadata.lazy_id));
+			}
+
+			return {
+				...pattern,
+				properties: pattern.properties.map((property) =>
+					property.type === 'RestElement'
+						? { ...property, argument: replace_lazy_param_pattern(property.argument) }
+						: { ...property, value: replace_lazy_param_pattern(property.value) },
+				),
+			};
+
+		case 'ArrayPattern':
+			if (pattern.lazy && pattern.metadata?.lazy_id) {
+				return /** @type {AST.Pattern} */ (b.id(pattern.metadata.lazy_id));
+			}
+
+			return {
+				...pattern,
+				elements: pattern.elements.map((element) =>
+					element === null ? null : replace_lazy_param_pattern(element),
+				),
+			};
+
+		case 'RestElement':
+			return { ...pattern, argument: replace_lazy_param_pattern(pattern.argument) };
+
+		default:
+			return pattern;
 	}
 }
 
@@ -798,4 +951,308 @@ export function is_inside_try_block(try_parent_stmt, context) {
 	}
 
 	return block_node !== null && try_parent_stmt.block === block_node;
+}
+
+/**
+ * Checks if a node is used as the left side of an assignment or update expression.
+ * @param {AST.Node} node
+ * @returns {boolean}
+ */
+export function is_inside_left_side_assignment(node) {
+	const path = node.metadata?.path;
+	if (!path || path.length === 0) {
+		return false;
+	}
+
+	/** @type {AST.Node} */
+	let current = node;
+
+	for (let i = path.length - 1; i >= 0; i--) {
+		const parent = path[i];
+
+		switch (parent.type) {
+			case 'AssignmentExpression':
+			case 'AssignmentPattern':
+				if (parent.right === current) {
+					return false;
+				}
+
+				if (parent.left === current) {
+					return true;
+				}
+				current = parent;
+				continue;
+			case 'UpdateExpression':
+				return true;
+			case 'MemberExpression':
+				// In obj[computeKey()] = 10, computeKey() is evaluated to determine
+				// which property to assign to, but is not itself an assignment target
+				if (parent.computed && parent.property === current) {
+					return false;
+				}
+				current = parent;
+				continue;
+			case 'Property':
+				// exit here to stop promoting current to parent
+				// and thus reaching VariableDeclarator, causing an erroneous truthy result
+				// e.g. const { [computeKey()]: value } = obj; where node = computeKey:
+				if (parent.key === current) {
+					return false;
+				}
+				current = parent;
+				continue;
+			case 'VariableDeclarator':
+				return parent.id === current;
+			case 'ForInStatement':
+			case 'ForOfStatement':
+				return parent.left === current;
+
+			case 'Program':
+			case 'FunctionDeclaration':
+			case 'FunctionExpression':
+			case 'ArrowFunctionExpression':
+			case 'ClassDeclaration':
+			case 'ClassExpression':
+			case 'MethodDefinition':
+			case 'PropertyDefinition':
+			case 'StaticBlock':
+			case 'Component':
+			case 'Element':
+				return false;
+
+			default:
+				current = parent;
+				continue;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Flattens top-level BlockStatements in switch case consequents so that
+ * BreakStatements and elements inside block-scoped cases are properly handled.
+ * e.g. `case 1: { <div /> break; }` → `[Element, BreakStatement]`
+ * @param {AST.Node[]} consequent
+ * @returns {AST.Node[]}
+ */
+export function flatten_switch_consequent(consequent) {
+	/** @type {AST.Node[]} */
+	const result = [];
+	for (const node of consequent) {
+		if (node.type === 'BlockStatement') {
+			result.push(.../** @type {AST.BlockStatement} */ (node).body);
+		} else {
+			result.push(node);
+		}
+	}
+	return result;
+}
+
+/**
+ * @param {string | null | undefined} name
+ * @returns {string | null}
+ */
+export function get_ripple_namespace_call_name(name) {
+	return name == null ? null : (RIPPLE_IMPORT_CALL_NAME[name]?.name ?? null);
+}
+
+/**
+ * Returns true if the given import name requires a __block parameter
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function ripple_import_requires_block(name) {
+	return name == null ? false : (RIPPLE_IMPORT_CALL_NAME[name]?.requiresBlock ?? false);
+}
+
+/**
+ * @param {AST.ClassDeclaration | AST.ClassExpression} node
+ * @param {CommonContext} context
+ * @returns {void}
+ */
+export function strip_class_typescript_syntax(node, context) {
+	delete node.typeParameters;
+	delete node.superTypeParameters;
+	delete node.implements;
+
+	if (node.superClass?.type === 'TSInstantiationExpression') {
+		node.superClass = /** @type {AST.Expression} */ (context.visit(node.superClass.expression));
+	} else if (node.superClass && 'typeArguments' in node.superClass) {
+		delete node.superClass.typeArguments;
+	}
+}
+
+/**
+ * Converts a JSXMemberExpression to an AST MemberExpression.
+ * e.g., <Foo.Bar.Baz> → MemberExpression(MemberExpression(Foo, Bar), Baz)
+ * @param {import('estree-jsx').JSXMemberExpression} jsx_member
+ * @returns {AST.MemberExpression}
+ */
+function jsx_member_expression_to_member_expression(jsx_member) {
+	/** @type {AST.Expression} */
+	let object;
+
+	if (jsx_member.object.type === 'JSXMemberExpression') {
+		// Recursively convert nested member expressions
+		object = jsx_member_expression_to_member_expression(jsx_member.object);
+	} else {
+		// Base case: JSXIdentifier
+		object = /** @type {AST.Identifier} */ ({
+			type: 'Identifier',
+			name: jsx_member.object.name,
+			start: jsx_member.object.start,
+			end: jsx_member.object.end,
+		});
+	}
+
+	return /** @type {AST.MemberExpression} */ ({
+		type: 'MemberExpression',
+		object,
+		property: /** @type {AST.Identifier} */ ({
+			type: 'Identifier',
+			name: jsx_member.property.name,
+			start: jsx_member.property.start,
+			end: jsx_member.property.end,
+		}),
+		computed: false,
+		optional: false,
+		start: jsx_member.start,
+		end: jsx_member.end,
+	});
+}
+
+/**
+ * Converts a JSX AST node (JSXElement, JSXText, etc.) to a Ripple AST node
+ * (Element, Text, RippleExpression) for processing inside `<tsx>` blocks.
+ * @param {AST.Node} node
+ * @returns {AST.Node | AST.Node[] | null}
+ */
+export function jsx_to_ripple_node(node) {
+	if (node.type === 'JSXElement') {
+		const opening = node.openingElement;
+		const name = opening.name;
+
+		/** @type {AST.Identifier | AST.MemberExpression} */
+		let id;
+
+		if (name.type === 'JSXIdentifier') {
+			id = /** @type {AST.Identifier} */ ({
+				type: 'Identifier',
+				name: name.name,
+				start: name.start,
+				end: name.end,
+			});
+		} else if (name.type === 'JSXMemberExpression') {
+			// Convert JSXMemberExpression to MemberExpression
+			// e.g., <Foo.Bar.Baz> → MemberExpression(MemberExpression(Foo, Bar), Baz)
+			id = jsx_member_expression_to_member_expression(name);
+		} else if (name.type === 'JSXNamespacedName') {
+			// For JSXNamespacedName like <namespace:element>, create an identifier with the full name
+			id = /** @type {AST.Identifier} */ ({
+				type: 'Identifier',
+				name: name.namespace.name + ':' + name.name.name,
+				start: name.start,
+				end: name.end,
+			});
+		} else {
+			// Fallback - should not reach here
+			id = /** @type {AST.Identifier} */ ({
+				type: 'Identifier',
+				name: 'unknown',
+				start: /** @type {any} */ (name).start,
+				end: /** @type {any} */ (name).end,
+			});
+		}
+
+		const attributes = opening.attributes
+			.map((attr) => {
+				if (attr.type === 'JSXAttribute') {
+					const is_dynamic = attr.value && attr.value.type === 'JSXExpressionContainer';
+					return /** @type {AST.Node} */ ({
+						type: 'Attribute',
+						name: {
+							type: 'Identifier',
+							name:
+								attr.name.type === 'JSXIdentifier'
+									? attr.name.name
+									: attr.name.namespace.name + ':' + attr.name.name.name,
+							tracked: is_dynamic,
+							start: attr.name.start,
+							end: attr.name.end,
+						},
+						value: attr.value
+							? attr.value.type === 'JSXExpressionContainer'
+								? attr.value.expression
+								: attr.value
+							: null,
+						shorthand: false,
+						start: attr.start,
+						end: attr.end,
+					});
+				} else if (attr.type === 'JSXSpreadAttribute') {
+					return /** @type {AST.Node} */ ({
+						type: 'SpreadAttribute',
+						argument: attr.argument,
+						start: attr.start,
+						end: attr.end,
+					});
+				}
+				return null;
+			})
+			.filter(Boolean);
+
+		const children = /** @type {AST.Node[]} */ (
+			/** @type {AST.Node[]} */ (node.children).map(jsx_to_ripple_node).flat().filter(Boolean)
+		);
+
+		return /** @type {AST.Element} */ (
+			/** @type {unknown} */ ({
+				type: 'Element',
+				id,
+				attributes,
+				children,
+				selfClosing: opening.selfClosing,
+				metadata: { scoped: false, path: /** @type {string[]} */ ([]) },
+				start: node.start,
+				end: node.end,
+			})
+		);
+	}
+
+	if (node.type === 'JSXText') {
+		if (node.value.trim() === '') return null;
+		return /** @type {AST.Node} */ ({
+			type: 'Text',
+			expression: {
+				type: 'Literal',
+				value: node.value,
+				raw: JSON.stringify(node.value),
+				start: node.start,
+				end: node.end,
+			},
+			metadata: {},
+			start: node.start,
+			end: node.end,
+		});
+	}
+
+	if (node.type === 'JSXExpressionContainer') {
+		if (node.expression.type === 'JSXEmptyExpression') return null;
+		return /** @type {AST.Node} */ ({
+			type: 'RippleExpression',
+			expression: node.expression,
+			metadata: {},
+			start: node.start,
+			end: node.end,
+		});
+	}
+
+	if (node.type === 'JSXFragment') {
+		return /** @type {AST.Node[]} */ (
+			/** @type {AST.Node[]} */ (node.children).map(jsx_to_ripple_node).flat().filter(Boolean)
+		);
+	}
+
+	return node;
 }

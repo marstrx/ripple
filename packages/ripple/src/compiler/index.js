@@ -27,8 +27,21 @@ export function compile(source, filename, options = {}) {
 	const analysis = analyze(ast, filename, options);
 	const result =
 		options.mode === 'server'
-			? transform_server(filename, source, analysis, options?.minify_css ?? false)
-			: transform_client(filename, source, analysis, false, options?.minify_css ?? false);
+			? transform_server(
+					filename,
+					source,
+					analysis,
+					options?.minify_css ?? false,
+					options?.dev ?? false,
+				)
+			: transform_client(
+					filename,
+					source,
+					analysis,
+					false,
+					options?.minify_css ?? false,
+					options?.hmr ?? false,
+				);
 
 	return result;
 }

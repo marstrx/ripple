@@ -1,0 +1,37 @@
+{
+  "name": "@ripple-ts/adapter-vercel",
+  "description": "Vercel adapter for Ripple metaframework (Build Output API v3)",
+  "license": "MIT",
+  "author": "Dominic Gannaway",
+  "version": "0.3.13",
+  "type": "module",
+  "module": "src/index.js",
+  "main": "src/index.js",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    }
+  },
+  "bin": {
+    "ripple-adapt-vercel": "./src/bin/adapt.js"
+  },
+  "scripts": {
+    "test": "pnpm -w test --project adapter-vercel"
+  },
+  "dependencies": {
+    "@ripple-ts/adapter": "workspace:*",
+    "@ripple-ts/adapter-node": "workspace:*",
+    "@vercel/nft": "catalog:default"
+  },
+  "homepage": "https://ripple-ts.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ripple-TS/ripple.git",
+    "directory": "packages/adapter-vercel"
+  },
+  "bugs": {
+    "url": "https://github.com/Ripple-TS/ripple/issues"
+  }
+}

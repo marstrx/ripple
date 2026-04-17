@@ -28,12 +28,24 @@ export var object_prototype = Object.prototype;
 export var array_prototype = Array.prototype;
 
 /**
+ * Slice helper for arrays and array-like values.
+ * @param {ArrayLike<any>} array_like
+ * @param {...number} args
+ * @returns {any[]}
+ */
+export function array_slice(array_like, ...args) {
+	return is_array(array_like)
+		? array_like.slice(...args)
+		: array_prototype.slice.call(array_like, ...args);
+}
+
+/**
  * Creates a text node that serves as an anchor point in the DOM.
  * @returns {Text}
  */
 export function create_anchor() {
 	var t = document.createTextNode('');
-	/** @type {any} */ (t).__t = '';
+	t.__t = '';
 	return t;
 }
 
@@ -42,7 +54,7 @@ export function create_anchor() {
  * @param {any} v - The object to check.
  * @returns {boolean}
  */
-export function is_tracked_object(v) {
+export function is_ripple_object(v) {
 	return typeof v === 'object' && v !== null && typeof (/** @type {any} */ (v).f) === 'number';
 }
 

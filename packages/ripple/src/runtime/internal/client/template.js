@@ -6,7 +6,8 @@ import {
 	TEMPLATE_SVG_NAMESPACE,
 	TEMPLATE_MATHML_NAMESPACE,
 } from '../../../constants.js';
-import { first_child, is_firefox } from './operations.js';
+import { hydrate_advance, hydrate_node, hydrating, pop } from './hydration.js';
+import { create_text, get_first_child, get_next_sibling, is_firefox } from './operations.js';
 import { active_block, active_namespace } from './runtime.js';
 
 /**
@@ -55,38 +56,74 @@ export function create_fragment_from_html(
  * Creates a template node or fragment from content and flags.
  * @param {string} content - The template content.
  * @param {number} flags - Flags for template type.
+ * @param {number} [count] - Pre-calculated count of top-level nodes (for fragments). When provided, avoids runtime parsing.
  * @returns {() => Node}
  */
-export function template(content, flags) {
+export function template(content, flags, count = 1) {
 	var is_fragment = (flags & TEMPLATE_FRAGMENT) !== 0;
 	var use_import_node = (flags & TEMPLATE_USE_IMPORT_NODE) !== 0;
 	var use_svg_namespace = (flags & TEMPLATE_SVG_NAMESPACE) !== 0;
 	var use_mathml_namespace = (flags & TEMPLATE_MATHML_NAMESPACE) !== 0;
 	/** @type {Node | DocumentFragment | undefined} */
 	var node;
+	var node_svg = false;
+	var node_mathml = false;
 	var is_comment = content === '<!>';
 	var has_start = !is_comment && !content.startsWith('<!>');
 
 	return () => {
+		if (hydrating) {
+			if (is_fragment) {
+				var start = /** @type {Node} */ (hydrate_node);
+				var end = start;
+
+				// Walk using compiler-provided hop count so hydration never
+				// parses template HTML into fragments.
+				for (var i = 1; i < count; i++) {
+					var next = get_next_sibling(end);
+
+					while (next !== null && next.nodeType === Node.COMMENT_NODE) {
+						next = get_next_sibling(next);
+					}
+
+					if (next === null) {
+						break;
+					}
+
+					end = next;
+				}
+
+				assign_nodes(start, end);
+				return start;
+			} else {
+				var node_to_use = /** @type {Node} */ (hydrate_node);
+				assign_nodes(node_to_use, node_to_use);
+				return node_to_use;
+			}
+		}
 		// If using runtime namespace, check active_namespace
 		var svg = !is_comment && (use_svg_namespace || active_namespace === 'svg');
 		var mathml = !is_comment && (use_mathml_namespace || active_namespace === 'mathml');
 
-		if (node === undefined) {
+		if (node === undefined || node_svg !== svg || node_mathml !== mathml) {
 			node = create_fragment_from_html(has_start ? content : '<!>' + content, svg, mathml);
-			if (!is_fragment) node = /** @type {Node} */ (first_child(node));
+			node_svg = svg;
+			node_mathml = mathml;
+			if (!is_fragment) node = /** @type {Node} */ (get_first_child(node));
 		}
 
+		/** @type {DocumentFragment | Node} */
 		var clone =
 			use_import_node || is_firefox
 				? document.importNode(/** @type {Node} */ (node), true)
 				: /** @type {Node} */ (node).cloneNode(true);
 
 		if (is_fragment) {
-			var start = first_child(clone);
-			var end = clone.lastChild;
+			// we know for sure that children exist
+			var start = /** @type {Node} */ (get_first_child(/** @type {DocumentFragment} */ (clone)));
+			var end = /** @type {Node} */ (/** @type {DocumentFragment} */ (clone).lastChild);
 
-			assign_nodes(/** @type {Node} */ (start), /** @type {Node} */ (end));
+			assign_nodes(start, end);
 		} else {
 			assign_nodes(clone, clone);
 		}
@@ -99,9 +136,65 @@ export function template(content, flags) {
  * Appends a DOM node before the anchor node.
  * @param {ChildNode} anchor - The anchor node.
  * @param {Node} dom - The DOM node to append.
+ * @param {boolean} [skip_advance] - If true, don't advance hydrate_node (used when next() already positioned it).
  */
-export function append(anchor, dom) {
+export function append(anchor, dom, skip_advance) {
+	if (hydrating) {
+		// When skip_advance is true, the caller (e.g., a fragment component) has already
+		// used next() to position hydrate_node correctly. We must NOT reset it.
+		if (skip_advance) {
+			return;
+		}
+
+		// During hydration, if anchor === dom, we're hydrating a child component
+		// where the "anchor" IS the content. If the cursor is still somewhere
+		// inside dom (at any depth), reset it to dom's level so sibling traversal
+		// works. But if the cursor has advanced past dom (e.g., because internal
+		// control flow blocks like switch/if/for advanced it through their
+		// hydration markers), preserve the advanced position.
+		if (anchor === dom) {
+			if (hydrate_node !== null && hydrate_node !== dom && dom.contains(hydrate_node)) {
+				pop(dom);
+			}
+			return;
+		}
+
+		// If the hydration cursor has descended into dom's children (e.g. after
+		// child()/sibling() traversal inside a single-node template), we need
+		// pop() to reset back to dom's sibling level before advancing.
+		// But if the cursor is already at dom's sibling level (e.g. because
+		// nested control flow blocks advanced it past dom via sibling traversal),
+		// pop() would incorrectly reset backwards — so we skip it.
+		if (hydrate_node !== null && hydrate_node !== dom && dom.contains(hydrate_node)) {
+			pop(dom);
+		} else if (hydrate_node !== dom) {
+			// Cursor has advanced past dom via sibling traversal (due to nested
+			// block processing). Update the branch block's end to reflect the
+			// actual extent, which may be past the statically-assigned end from
+			// the template's assign_nodes call.
+			var block = /** @type {Block} */ (active_block);
+			var s = block.s;
+			if (s !== null) {
+				s.end = /** @type {Node} */ (hydrate_node);
+			}
+		}
+
+		// Only advance if there's a next sibling. At the end of a component's
+		// content, there might not be more siblings, and that's fine.
+		hydrate_advance();
+		return;
+	}
 	anchor.before(/** @type {Node} */ (dom));
+}
+
+export function text(data = '') {
+	if (hydrating) {
+		assign_nodes(/** @type {Node} */ (hydrate_node), /** @type {Node} */ (hydrate_node));
+		return /** @type {Node} */ (hydrate_node);
+	}
+	var node = create_text(data);
+	assign_nodes(node, node);
+	return node;
 }
 
 /**
@@ -117,11 +210,11 @@ function from_namespace(content, ns = 'svg') {
 	elem.innerHTML = wrapped;
 	var fragment = elem.content;
 
-	var root = /** @type {Element} */ (first_child(fragment));
+	var root = /** @type {Element} */ (get_first_child(fragment));
 	var result = document.createDocumentFragment();
 
 	var first;
-	while ((first = first_child(root))) {
+	while ((first = get_first_child(root))) {
 		result.appendChild(/** @type {Node} */ (first));
 	}
 

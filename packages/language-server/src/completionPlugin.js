@@ -1,7 +1,13 @@
 /** @import { LanguageServicePlugin, TextEdit, CompletionItem } from '@volar/language-server'; */
 
 const { CompletionItemKind, InsertTextFormat } = require('@volar/language-server');
-const { getVirtualCode, createLogging, isInsideImport, isInsideExport } = require('./utils.js');
+const {
+	getVirtualCode,
+	createLogging,
+	isInsideImport,
+	isInsideExport,
+	is_ripple_document,
+} = require('./utils.js');
 
 const { log } = createLogging('[Ripple Completion Plugin]');
 
@@ -11,84 +17,68 @@ const { log } = createLogging('[Ripple Completion Plugin]');
  */
 const TRACKED_COLLECTION_SNIPPETS = [
 	{
-		label: '#Map',
-		filterText: '#Map',
-		detail: 'Create a Shorthand TrackedMap',
+		label: 'RippleMap',
+		filterText: 'RippleMap',
+		detail: 'Create a RippleMap',
 		documentation: 'A reactive Map that triggers updates when modified',
-		insertText: 'new #Map(${1})',
-		importName: null,
+		insertText: 'new RippleMap(${1})',
+		importName: 'RippleMap',
 	},
 	{
-		label: '#Set',
-		filterText: '#Set',
-		detail: 'Create a Shorthand TrackedSet',
+		label: 'RippleSet',
+		filterText: 'RippleSet',
+		detail: 'Create a RippleSet',
 		documentation: 'A reactive Set that triggers updates when modified',
-		insertText: 'new #Set(${1})',
-		importName: null,
+		insertText: 'new RippleSet(${1})',
+		importName: 'RippleSet',
 	},
 	{
-		label: 'TrackedMap',
-		filterText: 'TrackedMap',
-		detail: 'Create a TrackedMap',
-		documentation: 'A reactive Map that triggers updates when modified',
-		insertText: 'new TrackedMap(${1})',
-		importName: 'TrackedMap',
-	},
-	{
-		label: 'TrackedSet',
-		filterText: 'TrackedSet',
-		detail: 'Create a TrackedSet',
-		documentation: 'A reactive Set that triggers updates when modified',
-		insertText: 'new TrackedSet(${1})',
-		importName: 'TrackedSet',
-	},
-	{
-		label: 'TrackedArray',
-		filterText: 'TrackedArray',
-		detail: 'Create a TrackedArray',
+		label: 'RippleArray',
+		filterText: 'RippleArray',
+		detail: 'Create a RippleArray',
 		documentation: 'A reactive Array that triggers updates when modified',
-		insertText: 'new TrackedArray(${1})',
-		importName: 'TrackedArray',
+		insertText: 'new RippleArray(${1})',
+		importName: 'RippleArray',
 	},
 	{
-		label: 'TrackedArray.from',
-		filterText: 'TrackedArray.from',
-		detail: 'Create a TrackedArray.from',
+		label: 'RippleArray.from',
+		filterText: 'RippleArray.from',
+		detail: 'Create a RippleArray.from',
 		documentation: 'A reactive Array that triggers when modified',
-		insertText: 'new TrackedArray.from(${1})',
-		importName: 'TrackedArray',
+		insertText: 'new RippleArray.from(${1})',
+		importName: 'RippleArray',
 	},
 	{
-		label: 'TrackedObject',
-		filterText: 'TrackedObject',
-		detail: 'Create a TrackedObject',
+		label: 'RippleObject',
+		filterText: 'RippleObject',
+		detail: 'Create a RippleObject',
 		documentation: 'A reactive Object that triggers updates when modified',
-		insertText: 'new TrackedObject(${1})',
-		importName: 'TrackedObject',
+		insertText: 'new RippleObject(${1})',
+		importName: 'RippleObject',
 	},
 	{
-		label: 'TrackedDate',
-		filterText: 'TrackedDate',
-		detail: 'Create a TrackedDate',
+		label: 'RippleDate',
+		filterText: 'RippleDate',
+		detail: 'Create a RippleDate',
 		documentation: 'A reactive Date that triggers updates when modified',
-		insertText: 'new TrackedDate(${1})',
-		importName: 'TrackedDate',
+		insertText: 'new RippleDate(${1})',
+		importName: 'RippleDate',
 	},
 	{
-		label: 'TrackedURL',
-		filterText: 'TrackedURL',
-		detail: 'Create a TrackedURL',
+		label: 'RippleURL',
+		filterText: 'RippleURL',
+		detail: 'Create a RippleURL',
 		documentation: 'A reactive URL that triggers updates when modified',
-		insertText: 'new TrackedURL(${1})',
-		importName: 'TrackedURL',
+		insertText: 'new RippleURL(${1})',
+		importName: 'RippleURL',
 	},
 	{
-		label: 'TrackedURLSearchParams',
-		filterText: 'TrackedURLSearchParams',
-		detail: 'Create a TrackedURLSearchParams',
+		label: 'RippleURLSearchParams',
+		filterText: 'RippleURLSearchParams',
+		detail: 'Create a RippleURLSearchParams',
 		documentation: 'A reactive URLSearchParams that triggers updates when modified',
-		insertText: 'new TrackedURLSearchParams(${1})',
-		importName: 'TrackedURLSearchParams',
+		insertText: 'new RippleURLSearchParams(${1})',
+		importName: 'RippleURLSearchParams',
 	},
 	{
 		label: 'MediaQuery',
@@ -132,7 +122,7 @@ function findRippleImport(text) {
 /**
  * Generate additionalTextEdits to add an import
  * @param {string} documentText - Full document text
- * @param {string} importName - Name to import (e.g., 'TrackedMap')
+ * @param {string} importName - Name to import (e.g., 'RippleMap')
  * @returns {TextEdit[]}
  */
 function generateImportEdit(documentText, importName) {
@@ -187,22 +177,24 @@ function generateImportEdit(documentText, importName) {
  */
 const RIPPLE_SNIPPETS = [
 	{
-		label: '#[]',
+		label: '#style',
 		kind: CompletionItemKind.Snippet,
-		detail: 'Ripple Reactive Array Literal, shorthand for new TrackedArray',
-		documentation: 'Create a new Ripple Array Literal',
-		insertText: '#[${1}]',
+		detail: 'Scoped CSS class reference',
+		documentation:
+			'Produces a scoped CSS class string for passing to child components.\nThe class must be defined as a standalone selector in <style>.\n\nUsage: <Child cls={#style.highlight} />',
+		insertText: '#style.${1:className}',
 		insertTextFormat: InsertTextFormat.Snippet,
-		sortText: '0-#-array-literal',
+		sortText: '0-#-style',
 	},
 	{
-		label: '#{}',
+		label: '#server',
 		kind: CompletionItemKind.Snippet,
-		detail: 'Ripple Reactive Object Literal, shorthand for new TrackedObject',
-		documentation: 'Create a new Ripple Object Literal',
-		insertText: '#{${1}}',
+		detail: 'Server-only code block (module level)',
+		documentation:
+			'Marks a block as server-only. Code inside is tree-shaken on the client.\nMust be at module top level.\n\nUsage:\n#server {\n  export async function loadData() { ... }\n}',
+		insertText: '#server {\n\t$0\n}',
 		insertTextFormat: InsertTextFormat.Snippet,
-		sortText: '0-#-object-literal',
+		sortText: '0-#-server',
 	},
 	{
 		label: 'component',
@@ -240,15 +232,6 @@ const RIPPLE_SNIPPETS = [
 			'let ${1:name} = track(${2:0},\n\t(current) => {\n\t\t$3\n\t\treturn current;\n\t},\n\t(next, prev) => {\n\t\t$4\n\t\treturn next;\n\t}\n);',
 		insertTextFormat: InsertTextFormat.Snippet,
 		sortText: '0-track-getter-setter',
-	},
-	{
-		label: 'trackSplit',
-		kind: CompletionItemKind.Snippet,
-		detail: 'Split props with trackSplit',
-		documentation: 'Destructure props while preserving reactivity',
-		insertText: "const [${1:children}, ${2:rest}] = trackSplit(props, [${3:'children'}]);",
-		insertTextFormat: InsertTextFormat.Snippet,
-		sortText: '0-trackSplit',
 	},
 	{
 		label: 'effect',
@@ -358,14 +341,6 @@ const RIPPLE_IMPORTS = [
 		sortText: '0-import-effect',
 	},
 	{
-		label: 'import trackSplit',
-		kind: CompletionItemKind.Snippet,
-		detail: 'Import trackSplit from ripple',
-		insertText: "import { trackSplit } from 'ripple';",
-		insertTextFormat: InsertTextFormat.Snippet,
-		sortText: '0-import-trackSplit',
-	},
-	{
 		label: 'import untrack',
 		kind: CompletionItemKind.Snippet,
 		detail: 'Import untrack from ripple',
@@ -393,8 +368,7 @@ function createCompletionPlugin() {
 			completionProvider: {
 				// Trigger on Ripple-specific syntax:
 				// '<' - JSX/HTML tags
-				// '#' - TrackedMap/TrackedSet shortcuts
-				// Avoid '.' and ' ' to reduce noise - let manual trigger (Ctrl+Space) handle those
+				// '#' - #style, #server keywords
 				triggerCharacters: ['<', '#'],
 				resolveProvider: false,
 			},
@@ -406,13 +380,13 @@ function createCompletionPlugin() {
 				// This ensures TypeScript/JavaScript completions are still shown alongside Ripple snippets
 				isAdditionalCompletion: true,
 				async provideCompletionItems(document, position, completionContext, _token) {
-					if (!document.uri.endsWith('.ripple')) {
+					if (!is_ripple_document(document.uri)) {
 						return { items: [], isIncomplete: false };
 					}
 
 					const { virtualCode } = getVirtualCode(document, context);
 
-					if (virtualCode.languageId !== 'ripple') {
+					if (virtualCode && virtualCode.languageId !== 'ripple') {
 						// Check if we're inside an embedded code (like CSS in <style> blocks)
 						// If so, don't provide Ripple snippets - let CSS completions take priority
 						log(`Skipping Ripple completions in the '${virtualCode.languageId}' context`);
@@ -464,9 +438,9 @@ function createCompletionPlugin() {
 						});
 					}
 
-					// TrackedMap/TrackedSet completions when typing T...
+					// RippleMap/RippleSet completions when typing R, M...
 					// Also detects if 'new' is already typed before it to avoid duplicating
-					const trackedMatch = line.match(/(new\s+)?[T,M,#]([\w\.]*)$/);
+					const trackedMatch = line.match(/(new\s+)?[R,M]([\w\.]*)$/);
 
 					if (trackedMatch) {
 						const hasNew = !!trackedMatch[1];

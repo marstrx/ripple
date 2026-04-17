@@ -3,9 +3,9 @@
   "description": "TypeScript plugin for Ripple",
   "license": "MIT",
   "author": "Dominic Gannaway",
-  "version": "0.2.198",
+  "version": "0.3.13",
   "main": "src/index.js",
-  "homepage": "https://ripplejs.com",
+  "homepage": "https://ripple-ts.com",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Ripple-TS/ripple.git",
@@ -24,10 +24,14 @@
     "@volar/typescript": "catalog:default"
   },
   "devDependencies": {
+    "@types/node": "catalog:default",
     "tsdown": "catalog:default"
   },
   "peerDependencies": {
     "typescript": "catalog:peer",
     "ripple": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import prettier from 'prettier';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { languages } from './index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -39,6 +40,16 @@ expect.extend({
 });
 
 describe('prettier-plugin', () => {
+	it('registers .tsrx as a supported file extension', () => {
+		const ripple_language = languages?.[0];
+
+		if (!ripple_language) {
+			throw new Error('Missing Ripple language metadata');
+		}
+
+		expect(ripple_language.extensions).toContain('.tsrx');
+	});
+
 	/**
 	 * @param {string} code
 	 * @param {import('prettier').Options} [options]
@@ -231,7 +242,7 @@ export default component Basic() {
       <p>{'This is a basic Ripple application template.'}</p>
       <p>
         {'Edit '}
-        <code>{'src/App.ripple'}</code>
+        <code>{'src/App.rsrx'}</code>
         {' to get started.'}
       </p>
     </div>
@@ -269,6 +280,17 @@ export default component App() {
 			expect(formatted).toBeWithNewline(already_formatted);
 		});
 
+		it('should format import.meta expressions correctly', async () => {
+			const input = `export component Test(){if(import.meta.env.SSR){<div>{'Server'}</div>}}`;
+			const expected = `export component Test() {
+  if (import.meta.env.SSR) {
+    <div>{'Server'}</div>
+  }
+}`;
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
 		it('should format a component with an object property notation component markup', async () => {
 			const expected = `component Card(props) {
   <div class="card">
@@ -280,21 +302,10 @@ export default component App() {
 			expect(result).toBeWithNewline(expected);
 		});
 
-		it('should format a component with an object reactive property notation props.@children', async () => {
+		it('should format a component with a dynamic component using props member access', async () => {
 			const expected = `component Card(props) {
   <div class="card">
-    <props.@children />
-  </div>
-}`;
-
-			const result = await format(expected, { singleQuote: true });
-			expect(result).toBeWithNewline(expected);
-		});
-
-		it('should format a component with an object reactive bracketed property notation props.@["children"]', async () => {
-			const expected = `component Card(props) {
-  <div class="card">
-    <props.@['children'] />
+    <@props.children />
   </div>
 }`;
 
@@ -641,26 +652,26 @@ import { Something, type Props, track } from 'ripple';`;
 			expect(result).toBeWithNewline(expected);
 		});
 
-		it('should handle @ prefix', async () => {
+		it('should handle tracked variable with lazy destructuring', async () => {
 			const input = `export default component App() {
   <div>
-    let count = track(0);
-    @count = 2;
-    console.log(@count);
+    let &[count] = track(0);
+    count = 2;
     console.log(count);
-    if (@count > 1) {
-      <button onClick={() => @count++}>{@count}</button>
+    console.log(count);
+    if (count > 1) {
+      <button onClick={() => count++}>{count}</button>
     }
   </div>
 }`;
 			const expected = `export default component App() {
   <div>
-    let count = track(0);
-    @count = 2;
-    console.log(@count);
+    let &[count] = track(0);
+    count = 2;
     console.log(count);
-    if (@count > 1) {
-      <button onClick={() => @count++}>{@count}</button>
+    console.log(count);
+    if (count > 1) {
+      <button onClick={() => count++}>{count}</button>
     }
   </div>
 }`;
@@ -695,19 +706,19 @@ import { Something, type Props, track } from 'ripple';`;
 			expect(result).toBeWithNewline(expected);
 		});
 
-		it('should preserve @ symbol in JSX attributes and shorthand syntax', async () => {
+		it('should format JSX attributes with tracked values', async () => {
 			const input = `component App() {
-	const count = track(0);
+	const &[count] = track(0);
 
-	<Counter count={@count} />
-	<Counter {@count} />
+	<Counter count={count} />
+	<Counter {count} />
 }`;
 
 			const expected = `component App() {
-  const count = track(0);
+  const &[count] = track(0);
 
-  <Counter {@count} />
-  <Counter {@count} />
+  <Counter {count} />
+  <Counter {count} />
 }`;
 
 			const result = await format(input, { singleQuote: true });
@@ -952,36 +963,7 @@ export component Test({ a, b }: Props) {}`;
 
 		it('should not strip @ from dynamic self-closing components', async () => {
 			const expected = `component App() {
-  <@tracked_object.@tracked_basic />
-}`;
-
-			const result = await format(expected, { singleQuote: true, printWidth: 100 });
-			expect(result).toBeWithNewline(expected);
-		});
-
-		it('should keep @ on dynamic object member array expressions', async () => {
-			const expected = `component App() {
-  const obj = {
-    [0]: track(0),
-  };
-
-  <div>{obj.@[0]}</div>
-
-  <button
-    onClick={() => {
-      obj.@[0]++;
-    }}
-  >
-    {'Increment'}
-  </button>
-
-  <button
-    onClick={() => {
-      obj.@[0] += 1;
-    }}
-  >
-    {'Increment'}
-  </button>
+  <@ripple_object.tracked_basic />
 }`;
 
 			const result = await format(expected, { singleQuote: true, printWidth: 100 });
@@ -1017,7 +999,8 @@ import { effect, track } from 'ripple';`;
 		});
 
 		it('does not add spaces around inlined array elements in destructured arguments', async () => {
-			const expected = `for (const [key, value] of Object.entries(attributes).filter(([_key, value]) => value !== '')) {}
+			const expected = `for (const [key, value] of Object.entries(attributes).filter(([_key, value]) => value !== '')) {
+}
 const [obj1, obj2] = arrayOfObjects;`;
 			const result = await format(expected, { singleQuote: true, printWidth: 100 });
 			expect(result).toBeWithNewline(expected);
@@ -1236,17 +1219,32 @@ const [obj1, obj2] = arrayOfObjects;`;
 			expect(result).toBeWithNewline(expected);
 		});
 
-		it('should keep TrackedMap short syntax intact', async () => {
-			const expected = `const map = new #Map([['key1', 'value1'], ['key2', 'value2']]);
-const set = new #Set([1, 2, 3]);`;
+		it('should not mangle empty stylesheet tags <style></style>', async () => {
+			const input = `component App() {
+  <style>
+
+  </style>
+}`;
+
+			const expected = `component App() {
+  <style></style>
+}`;
+
+			const result = await format(input, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should keep RippleMap short syntax intact', async () => {
+			const expected = `const map = new RippleMap([['key1', 'value1'], ['key2', 'value2']]);
+const set = new RippleSet([1, 2, 3]);`;
 
 			const result = await format(expected, { singleQuote: true, printWidth: 100 });
 			expect(result).toBeWithNewline(expected);
 		});
 
-		it('should keep TrackedSet parents with short syntax and no args intact', async () => {
+		it('should keep RippleSet parents with short syntax and no args intact', async () => {
 			const expected = `component SetTest() {
-  let items = new #Set();
+  let items = new RippleSet();
 
   <button onClick={() => items.add(1)}>{'add'}</button>
   <pre>{items.size}</pre>
@@ -1256,14 +1254,13 @@ const set = new #Set([1, 2, 3]);`;
 			expect(result).toBeWithNewline(expected);
 		});
 
-		it('should keep TrackedMap parents with short syntax and no args intact', async () => {
+		it('should keep RippleMap parents with short syntax and no args intact', async () => {
 			const expected = `component MapTest() {
-  let items = new #Map();
+  let items = new RippleMap();
 
   <button onClick={() => items.set('key', 1)}>{'add'}</button>
   <pre>{items.size}</pre>
 }`;
-
 			const result = await format(expected, { singleQuote: true, printWidth: 100 });
 			expect(result).toBeWithNewline(expected);
 		});
@@ -1366,7 +1363,7 @@ import { Portal as RipplePortal } from 'ripple';`;
 		});
 
 		it('should preserve blank lines between export statements and import statements or comments', async () => {
-			const expected = `export { handler } from './test.ripple';
+			const expected = `export { handler } from './test.rsrx';
 
 import { Portal as RipplePortal } from 'ripple';
 
@@ -1379,7 +1376,7 @@ import { GetRootNode } from './somewhere';`;
 		});
 
 		it('should preserve export interface with extends as provided', async () => {
-			const expected = `export interface TrackedArray<T> extends Array<T> {}`;
+			const expected = `export interface RippleArray<T> extends Array<T> {}`;
 
 			const result = await format(expected, { singleQuote: true, printWidth: 100 });
 			expect(result).toBeWithNewline(expected);
@@ -1391,7 +1388,7 @@ import { GetRootNode } from './somewhere';`;
  * @param {'contentRect' | 'contentBoxSize' | 'borderBoxSize' | 'devicePixelContentBoxSize'} type
  */
 function bind_element_rect(maybe_tracked, type) {
-  if (!is_tracked_object(maybe_tracked)) {
+  if (!is_ripple_object(maybe_tracked)) {
     throw not_tracked_type_error(\`bind\${type.charAt(0).toUpperCase() + type.slice(1)}()\`);
   }
 
@@ -1668,7 +1665,7 @@ const program =
     onemore: 100,
   };
 
-  // if (props.@count > 1) {
+  // if (props.count > 1) {
   // 	delete more.another;
   // }
 
@@ -1707,7 +1704,7 @@ const program =
 		});
 
 		it('should keep parents in math subtraction and multiplication', async () => {
-			const expected = `let offset = track(() => (@page - 1) * @limit);`;
+			const expected = `let offset = track(() => (page - 1) * limit);`;
 
 			const result = await format(expected, { singleQuote: true, printWidth: 100 });
 			expect(result).toBeWithNewline(expected);
@@ -1720,6 +1717,31 @@ files = [...(files ?? []), ...dt.files];`;
 files = [...(files ?? []), ...dt.files];`;
 
 			const result = await format(input, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should not double-parenthesize a parenthesized identifier callee', async () => {
+			const expected = `const s = (foo)();`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 80 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve parentheses around IIFE arrow function callee', async () => {
+			const expected = `const s = (() => {
+  return true;
+})();`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 80 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve parentheses around IIFE function expression callee', async () => {
+			const expected = `const s = (function () {
+  return true;
+})();`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 80 });
 			expect(result).toBeWithNewline(expected);
 		});
 
@@ -1746,7 +1768,7 @@ files = [...(files ?? []), ...dt.files];`;
   },
   button: component({ children }) {
     <button>
-      <children />
+      {children}
     </button>
   },
 };`;
@@ -1757,7 +1779,7 @@ files = [...(files ?? []), ...dt.files];`;
 
 		it('should preserve the order of try / pending / catch block', async () => {
 			const expected = `component Test() {
-  let items: TrackedArray<string> | null = null;
+  let items: RippleArray<string> | null = null;
   let error: string | null = null;
 
   async function* throwingIterable() {
@@ -1765,7 +1787,7 @@ files = [...(files ?? []), ...dt.files];`;
   }
 
   try {
-    items = await TrackedArray.fromAsync(throwingIterable());
+    items = await RippleArray.fromAsync(throwingIterable());
     for (const item of items) {
       <li>{item}</li>
     }
@@ -1779,6 +1801,440 @@ files = [...(files ?? []), ...dt.files];`;
 }`;
 
 			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should format catch block with reset param and type annotation', async () => {
+			const expected = `component Test() {
+  try {
+    const data = await fetchData();
+    <div>{data}</div>
+  } pending {
+    <div>{'Loading...'}</div>
+  } catch (error: Error, reset: () => void) {
+    <div>{error.message}</div>
+    <button onClick={reset}>{'Retry'}</button>
+  }
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve class component method', async () => {
+			const expected = `class TestClass {
+  component something() {
+    <div>{'Nested component'}</div>
+  }
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve class computed method', async () => {
+			const expected = `class TestClass {
+  ['something']() {
+    const i = 10;
+  }
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve class computed component method', async () => {
+			const expected = `class TestClass {
+  component ['something']() {
+    <div>{'Nested component'}</div>
+  }
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should format class with a literal component method', async () => {
+			const input = `class TestClass {
+  component 'something'() {
+    <div>{'Nested component'}</div>
+  }
+}`;
+
+			const expected = `class TestClass {
+  component something() {
+    <div>{'Nested component'}</div>
+  }
+}`;
+
+			const result = await format(input, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve object component methods', async () => {
+			const expected = `const obj = {
+  component something() {
+    <div>{'Nested component'}</div>
+  },
+};`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve object computed methods', async () => {
+			const expected = `const obj = {
+  ['something']() {
+    const i = 10;
+  },
+};`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve object computed component method', async () => {
+			const expected = `const obj = {
+  component ['something']() {
+    <div>{'Nested component'}</div>
+  },
+};`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should format object with a literal component method', async () => {
+			const input = `const obj = {
+  component 'something'() {
+    <div>{'Nested component'}</div>
+  },
+};`;
+			const expected = `const obj = {
+  component something() {
+    <div>{'Nested component'}</div>
+  },
+};`;
+
+			const result = await format(input, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should print class constructor method only once', async () => {
+			const expected = `class TestClass {
+  constructor(value: T) {
+    this.value = value;
+  }
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should not remove comments when stylesheet contains some sort of combination of selectors', async () => {
+			const expected = `component Editor() {
+  <div class="editor-mockup">
+    <div class="editor-header">
+      <div class="editor-dots">
+        // <div class="editor-dot red" />
+        // <div class="editor-dot yellow" />
+        <div class="editor-dot green" />
+      </div>
+      <div class="editor-tab">{'Examples.rsrx'}</div>
+    </div>
+    <div class="editor-content">
+      <pre class="editor-code">
+        <span class="editor-loader">{'Loading...'}</span>
+      </pre>
+    </div>
+  </div>
+
+  <style>
+    @keyframes editorSlideIn {
+      0% {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+      100% {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    .editor-mockup {
+      max-width: 700px;
+      margin: 1rem auto;
+      background: rgba(30, 30, 35, 0.98);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      text-align: left;
+      opacity: 1;
+      transform: translateY(30px);
+      animation: editorSlideIn 1s ease-out 0.5s forwards;
+    }
+
+    .editor-header {
+      background: rgba(20, 20, 25, 0.9);
+      padding: 0.75rem 1rem 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+
+    .editor-dots {
+      display: flex;
+      gap: 0.5rem;
+      align-self: center;
+      margin-top: -7px;
+    }
+
+    .editor-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .editor-dot.red {
+      background: #ff5f57;
+    }
+    .editor-dot.yellow {
+      background: #ffbd2e;
+    }
+    .editor-dot.green {
+      background: #28ca42;
+    }
+
+    .editor-loader {
+      display: 'flex';
+      align-items: center;
+      justify-content: center;
+    }
+
+    .editor-tab {
+      background: rgba(25, 25, 30, 0.95);
+      padding: 0.5rem 1rem;
+      border-radius: 6px 6px 0 0;
+      color: rgba(255, 255, 255, 0.9);
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+      font-size: 0.75rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-bottom: none;
+      margin-bottom: -1px;
+      align-self: flex-end;
+    }
+
+    .editor-content {
+      background: rgba(25, 25, 30, 0.95);
+      padding: 0;
+      font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      color: #e1e4e8;
+      overflow-x: auto;
+      text-align: left;
+      height: 800px;
+    }
+
+    .editor-code {
+      margin: 0;
+      padding: 1.5rem;
+      background: none;
+      color: inherit;
+      font: inherit;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    :global(.editor-line) {
+      display: block;
+    }
+
+    :global(.line-number) {
+      color: rgba(255, 255, 255, 0.3);
+      display: inline-block;
+      width: 1rem;
+      text-align: right;
+      margin-right: 0.75rem;
+      user-select: none;
+    }
+
+    :global(.keyword) {
+      color: #569cd6;
+    }
+    :global(.export-keyword) {
+      color: #c586c0;
+    }
+    :global(.string) {
+      color: #ce9178;
+    }
+    :global(.component) {
+      color: #4ec9b0;
+    }
+    :global(.function) {
+      color: #dcdcaa;
+    }
+    :global(.property) {
+      color: #9cdcfe;
+    }
+    :global(.css-selector) {
+      color: #d7ba7d;
+    }
+    :global(.control-keyword) {
+      color: #c586c0;
+    }
+    :global(.block-brace) {
+      color: #c586c0;
+    }
+    :global(.tag) {
+      color: #569cd6;
+    }
+    :global(.attribute) {
+      color: #92c5f8;
+    }
+    :global(.value) {
+      color: #b5cea8;
+    }
+    :global(.comment) {
+      color: #6a9955;
+      font-style: italic;
+    }
+    :global(.brace) {
+      color: #ffd700;
+    }
+    :global(.css-brace) {
+      color: #d4d4d4;
+    }
+    :global(.template-brace) {
+      color: #ffd700;
+    }
+    :global(.ripple-syntax) {
+      color: #4fc1ff;
+    }
+    :global(.bracket) {
+      color: #808080;
+    }
+    :global(.reactive-var) {
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+  </style>
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve comments above attributes on dom elements', async () => {
+			const expected = `component App() {
+  <div
+    // @ripple-ignore
+    something="test"
+  >
+    {'test'}
+  </div>
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve comments above attributes on components', async () => {
+			const expected = `component App() {
+  <Child
+    // @ripple-ignore
+    something="test"
+  >
+    {'test'}
+  </Child>
+}
+component Child({ something }) {
+  <div>{something}</div>
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('keeps parens in place when necessary for logical reasons with && and || operators', async () => {
+			const expected = `function App() {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+  }
+}`;
+
+			const result = await format(expected, { singleQuote: true, printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('expands empty braces to new lines for for-in statements', async () => {
+			const expected = `for (const key in obj) {
+}`;
+			const result = await format(expected);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('expands empty braces to new lines for for statements', async () => {
+			const expected = `for (let i = 0; i < 10; i++) {
+}`;
+			const result = await format(expected);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('expands empty braces to new lines for while statements', async () => {
+			const expected = `while (true) {
+}`;
+			const result = await format(expected);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('expands empty braces to new lines for do-while statements', async () => {
+			const expected = `do {
+} while (true);`;
+			const result = await format(expected);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('adds semicolon after do-while when semi option is true', async () => {
+			const input = `do { console.log('x') } while (true)`;
+			const expected = `do {
+  console.log("x");
+} while (true);`;
+			const result = await format(input);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('omits semicolon after do-while when semi option is false', async () => {
+			const input = `do { console.log('x') } while (true);`;
+			const expected = `do {
+  console.log("x")
+} while (true)`;
+			const result = await format(input, { semi: false });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('expands empty braces to new lines for switch case blocks', async () => {
+			const expected = `switch (x) {
+  case 1: {
+  }
+}`;
+			const result = await format(expected);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('prints function with a rest parameter correctly', async () => {
+			const expected = `function TestRest(...args: string[]) {
+  console.log(args);
+}`;
+
+			const result = await format(expected);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('keeps parens around as ts expression and optional calling', async () => {
+			const expected = `(resolve_fn as () => void)?.();`;
+
+			const result = await format(expected);
 			expect(result).toBeWithNewline(expected);
 		});
 	});
@@ -1824,18 +2280,18 @@ files = [...(files ?? []), ...dt.files];`;
 
 		it('should correctly handle call expressions', async () => {
 			const input = `export component App() {
-	const context = track(globalContext.get().theme);
+	const &[context] = track(globalContext.get().theme);
 	<div>
 		<TypedComponent />
-		{@context}
+		{context}
 	</div>
 }`;
 
 			const expected = `export component App() {
-  const context = track(globalContext.get().theme);
+  const &[context] = track(globalContext.get().theme);
   <div>
     <TypedComponent />
-    {@context}
+    {context}
   </div>
 }`;
 
@@ -1935,7 +2391,7 @@ message.push(/* Some test comment */ greet(/* Some text */ \`Ripple\`));`;
 	it('should not move commented composite elements to the outside of parent element', async () => {
 		const expected = `component Child({ children, NonExistent, ...props }) {
   <div {...props}>
-    // <children />
+    // {children}
     // <NonExistent />
   </div>
 }`;
@@ -2006,6 +2462,49 @@ function test() {
 		expect(result).toBeWithNewline(expected);
 	});
 
+	it('should preserve comments before closing tag in elements', async () => {
+		const expected = `component App() {
+  <div id="second-top-block">
+    if (true) {
+      <div>{'b is true'}</div>
+    }
+    // <div>
+    // 	<div />
+    // </div>
+    // <div id="sibling-block">{'Sibling'}</div>
+  </div>
+}`;
+
+		const result = await format(expected, { singleQuote: true });
+		expect(result).toBeWithNewline(expected);
+	});
+
+	it('should preserve trailing comments after last child element before closing tag', async () => {
+		const expected = `component App() {
+  <div>
+    <span>{'first'}</span>
+    <span>{'second'}</span>
+    // trailing comment 1
+    // trailing comment 2
+  </div>
+}`;
+
+		const result = await format(expected, { singleQuote: true });
+		expect(result).toBeWithNewline(expected);
+	});
+
+	it('should preserve block comments before closing tag in elements', async () => {
+		const expected = `component App() {
+  <div>
+    <span>{'child'}</span>
+    /* block comment */
+  </div>
+}`;
+
+		const result = await format(expected, { singleQuote: true });
+		expect(result).toBeWithNewline(expected);
+	});
+
 	it('should preserve trailing comments in function parameters', async () => {
 		const expected = `function test(
   // comment in params
@@ -2064,17 +2563,8 @@ function test() {
 		expect(result).toBeWithNewline(expected);
 	});
 
-	it('should preserve comments in object and tracked object expressions', async () => {
+	it('should preserve comments in object expressions', async () => {
 		const expected = `const obj = {
-  /* comment 1 */
-  a: 1,
-
-  // comment 2
-  b: 2,
-  // comment 3
-};
-
-const obj2 = #{
   /* comment 1 */
   a: 1,
 
@@ -2110,6 +2600,49 @@ const obj2 = #{
 		expect(result).toBeWithNewline(expected);
 	});
 
+	it('should not add an extra new line above a comment inside objects and in between properties', async () => {
+		const expected = `let obj = {
+  ['hey']: function () {
+    const i = 'yo';
+  },
+  // <div>{'Weird name component'}</div>
+  normal() {
+    const b = 'hey';
+  },
+};`;
+
+		const result = await format(expected, { singleQuote: true });
+		expect(result).toBeWithNewline(expected);
+	});
+
+	it('should not add an extra blank line before a comment inside element children', async () => {
+		const expected = `component App() {
+  <div id="second-top-block">
+    <div>
+      let x = 1;
+      // comment
+      <div>{'Test'}</div>
+    </div>
+  </div>
+}`;
+
+		const result = await format(expected, { singleQuote: true });
+		expect(result).toBeWithNewline(expected);
+	});
+
+	it('should preserve an existing blank line before a comment inside element children', async () => {
+		const expected = `component App() {
+  <div>
+    let x = 1;
+
+    // comment
+    <div>{'Test'}</div>
+  </div>
+}`;
+
+		const result = await format(expected, { singleQuote: true });
+		expect(result).toBeWithNewline(expected);
+	});
 	it('should preserve comment if the whole component code is commented out', async () => {
 		const expected = `export component Test() {
   // thing
@@ -2176,57 +2709,17 @@ const obj2 = #{
 		expect(result).toBeWithNewline(expected);
 	});
 
-	it('should preserve comments in arrays width printWidth 3', async () => {
-		const input = `const arr = #[
-  1,
-  /* comment 1 */
-  2,
-  3,
-  // comment 2
-];`;
-
-		const expected = `const arr =
-  #[
-    1,
-    /* comment 1 */
-    2,
-    3,
-    // comment 2
-  ];`;
-
-		const result = await format(input, { singleQuote: true, printWidth: 3 });
-		expect(result).toBeWithNewline(expected);
-	});
-
-	it('should preserve comments in arrays width printWidth 13', async () => {
-		const input = `const arr =
-  #[
-    1 /* comment 1 */,
-    2, 3,
-    // comment 2
-  ];`;
-
-		const expected = `const arr = #[
-  1 /* comment 1 */,
-  2, 3,
-  // comment 2
-];`;
-
-		const result = await format(input, { singleQuote: true, printWidth: 13 });
-		expect(result).toBeWithNewline(expected);
-	});
-
 	it('should preserve comments inside js/ts blocks inside markup', async () => {
 		const expected = `component App() {
   <button
     onClick={() => {
-      @hasError = false;
+      hasError = false;
       try {
-        @hasError = false;
+        hasError = false;
         // @ts-ignore
         obj['nonexistent']();
       } catch {
-        // @hasError = true;
+        // hasError = true;
       }
     }}
   >
@@ -2361,8 +2854,10 @@ const obj2 = #{
 		const input = `for (const [i = 0, item] of items.entries()) {}
 for (const {i = 0, item} of items.entries()) {}`;
 
-		const expected = `for (const [i = 0, item] of items.entries()) {}
-for (const { i = 0, item } of items.entries()) {}`;
+		const expected = `for (const [i = 0, item] of items.entries()) {
+}
+for (const { i = 0, item } of items.entries()) {
+}`;
 
 		const result = await format(input);
 		expect(result).toBeWithNewline(expected);
@@ -2434,6 +2929,18 @@ const items = [] as unknown[];`;
   <div>{html myHtml}</div>
   <div>{html 'hello'}</div>
   <div>{html \`<b>test</b>\`}</div>
+}`;
+
+		const result = await format(input, { singleQuote: true });
+		expect(result).toBeWithNewline(expected);
+	});
+
+	it('should format expression and explicit text interpolation syntax correctly', async () => {
+		const input = `export component App(){<div>{message}</div><div>{text message}</div>}`;
+
+		const expected = `export component App() {
+  <div>{message}</div>
+  <div>{text message}</div>
 }`;
 
 		const result = await format(input, { singleQuote: true });
@@ -2640,26 +3147,6 @@ const items = [] as unknown[];`;
 			expect(result).toBeWithNewline(expected);
 		});
 
-		it('should format nested generics types', async () => {
-			const expected = `component Test() {
-  const [children, rest] = trackSplit<
-    PropsWithChildren<{
-      class: string;
-      id: string;
-      onClick: EventListener;
-    }>,
-    keyof PropsWithChildren<{
-      class: string;
-      id: string;
-      onClick: EventListener;
-    }>
-  >(props as Props, ['children']);
-}`;
-
-			const result = await format(expected, { singleQuote: true });
-			expect(result).toBeWithNewline(expected);
-		});
-
 		it('should format TypeScript tuple types (TSTupleType)', async () => {
 			const input = `type T = [string, number, boolean];`;
 			const expected = `type T = [string, number, boolean];`;
@@ -2691,6 +3178,20 @@ const items = [] as unknown[];`;
 		it('should format TypeScript mapped types (TSMappedType)', async () => {
 			const input = `type ReadonlyPartial<T> = { readonly [K in keyof T]?: T[K] }`;
 			const expected = `type ReadonlyPartial<T> = { readonly [K in keyof T]?: T[K] };`;
+			const result = await format(input);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve minus mapped modifiers in TypeScript mapped types', async () => {
+			const input = `type MutableRequired<T> = { -readonly [K in keyof T]-?: T[K] }`;
+			const expected = `type MutableRequired<T> = { -readonly [K in keyof T]-?: T[K] };`;
+			const result = await format(input);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve explicit plus mapped modifiers in TypeScript mapped types', async () => {
+			const input = `type ExplicitReadonlyOptional<T> = { +readonly [K in keyof T]+?: T[K] }`;
+			const expected = `type ExplicitReadonlyOptional<T> = { readonly [K in keyof T]?: T[K] };`;
 			const result = await format(input);
 			expect(result).toBeWithNewline(expected);
 		});
@@ -2733,6 +3234,14 @@ const items = [] as unknown[];`;
 			expect(result).toBeWithNewline(expected);
 		});
 
+		it('should preserve TSCallSignatureDeclaration with conditional types', async () => {
+			const expected = `interface TrackedCallable<V> {
+  (props: V extends Component<infer P> ? P : never): V extends Component ? void : never;
+}`;
+			const result = await format(expected, { printWidth: 100 });
+			expect(result).toBeWithNewline(expected);
+		});
+
 		it('should format TSNonNullExpression', async () => {
 			const input = `component Test(){let value:string|null=null;let length=value!.length;<div>{length}</div>}`;
 			const expected = `component Test() {
@@ -2759,6 +3268,64 @@ const items = [] as unknown[];`;
   return x!.toUpperCase();
 }`;
 			const result = await format(input);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should format TSDeclareFunction (function overload signatures)', async () => {
+			const input = `export function test(arg: string): string;
+export function test(arg: number): string;
+export function test(arg: string | number): string {
+  return String(arg);
+}`;
+			const expected = `export function test(arg: string): string;
+export function test(arg: number): string;
+export function test(arg: string | number): string {
+  return String(arg);
+}`;
+			const result = await format(input);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve declare modifier on ambient function declarations', async () => {
+			const input = `declare function doSomething(x: string): void;
+declare function processData<T>(data: T): Promise<T>;`;
+			const expected = `declare function doSomething(x: string): void;
+declare function processData<T>(data: T): Promise<T>;`;
+			const result = await format(input);
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve generics on method shorthand in object literals', async () => {
+			const input = `function getBuilder() {
+  return {
+    build<T>(): T {
+      return 'test' as unknown as T;
+    },
+  };
+}`;
+			const expected = `function getBuilder() {
+  return {
+    build<T>(): T {
+      return 'test' as unknown as T;
+    },
+  };
+}`;
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should preserve multiple generics on method shorthand', async () => {
+			const input = `const obj = {
+  method<V, T, U>(): { build: () => V; data: T; key: U } {
+    return null as any;
+  },
+};`;
+			const expected = `const obj = {
+  method<V, T, U>(): { build: () => V; data: T; key: U } {
+    return null as any;
+  },
+};`;
+			const result = await format(input, { singleQuote: true });
 			expect(result).toBeWithNewline(expected);
 		});
 
@@ -2939,6 +3506,10 @@ try {
   {
     "id": "toast:6",
     "stacked": false,
+  },
+  {
+    ["id"]: "toast:6",
+    ["stacked"]: false,
   }
 ];`;
 
@@ -2963,6 +3534,10 @@ try {
     id: 'toast:6',
     stacked: false,
   },
+  {
+    ['id']: 'toast:6',
+    ['stacked']: false,
+  },
 ];`;
 
 			const result = await format(input, { singleQuote: true, arrowParens: 'always' });
@@ -2972,7 +3547,7 @@ try {
 		it('properly formats components markup and new lines and leaves one new line between components and <style> if one or more exits', async () => {
 			const input = `export component App() {
   <div>
-    <RowList rows={#[{id: 'a'}, {id: 'b'}, {id: 'c'}]}>
+    <RowList rows={[{id: 'a'}, {id: 'b'}, {id: 'c'}]}>
       component Row({id, index, isHighlighted = (index) => (index % 2) === 0}) {
         <div class={{highlighted: isHighlighted(index)}}>{index}{' - '}{id}</div>
 
@@ -2995,7 +3570,7 @@ component RowList({ rows, Row }) {
 
 			const expected = `export component App() {
   <div>
-    <RowList rows={#[{ id: 'a' }, { id: 'b' }, { id: 'c' }]}>
+    <RowList rows={[{ id: 'a' }, { id: 'b' }, { id: 'c' }]}>
       component Row({ id, index, isHighlighted = (index) => index % 2 === 0 }) {
         <div class={{ highlighted: isHighlighted(index) }}>
           {index}
@@ -3018,88 +3593,6 @@ component RowList({ rows, Row }) {
   for (const { id } of rows; index i) {
     <Row index={i} {id} />
   }
-}`;
-			const result = await format(input, {
-				singleQuote: true,
-				arrowParens: 'always',
-				printWidth: 100,
-			});
-			expect(result).toBeWithNewline(expected);
-		});
-
-		it('leaves the shorthand reactive declaration intact and formats the same way as plain objects', async () => {
-			const input = `export component App() {
-  const obj = #{ a: 1, b: 2, c: 3 };
-  let singleUser = #{name:"Test Me", email: "abc@example.com"}
-}`;
-
-			const expected = `export component App() {
-  const obj = #{ a: 1, b: 2, c: 3 };
-  let singleUser = #{ name: 'Test Me', email: 'abc@example.com' };
-}`;
-			const result = await format(input, {
-				singleQuote: true,
-				arrowParens: 'always',
-				printWidth: 100,
-			});
-			expect(result).toBeWithNewline(expected);
-		});
-
-		it('formats single line reactive object into multiline when printWidth is exceeded', async () => {
-			const input = `export component App() {
-  const obj = #{a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10, k: 11, l: 12, m: 13, n: 14, o: 15};
-  let singleUser = #{name:"Test Me", email: "abc@example.com"}
-}`;
-
-			const expected = `export component App() {
-  const obj = #{
-    a: 1,
-    b: 2,
-    c: 3,
-    d: 4,
-    e: 5,
-    f: 6,
-    g: 7,
-    h: 8,
-    i: 9,
-    j: 10,
-    k: 11,
-    l: 12,
-    m: 13,
-    n: 14,
-    o: 15,
-  };
-  let singleUser = #{ name: 'Test Me', email: 'abc@example.com' };
-}`;
-			const result = await format(input, {
-				singleQuote: true,
-				arrowParens: 'always',
-				printWidth: 100,
-			});
-			expect(result).toBeWithNewline(expected);
-		});
-
-		it('leaves the shorthand reactive array declaration intact and formats the same way as regular array', async () => {
-			const input = `export component App() {
-  const arr = #[ {a: 1}, { b:2}, {c:3 }   ];
-  let multi = #[{a: 1}, {b: 2}, {c: 3}, {d: 4}, {e:5}, {f:6}, {g: 7}, {h: 8}, {i:9}, {j: 10}, {k: 11}];
-}`;
-
-			const expected = `export component App() {
-  const arr = #[{ a: 1 }, { b: 2 }, { c: 3 }];
-  let multi = #[
-    { a: 1 },
-    { b: 2 },
-    { c: 3 },
-    { d: 4 },
-    { e: 5 },
-    { f: 6 },
-    { g: 7 },
-    { h: 8 },
-    { i: 9 },
-    { j: 10 },
-    { k: 11 },
-  ];
 }`;
 			const result = await format(input, {
 				singleQuote: true,
@@ -3840,7 +4333,7 @@ export component App() {
     {test}
     <polygon points="0,0 30,0 15,10" />
   </svg>
-  // <div><children /></div>
+  // <div>{children}</div>
 }
 
 component Polygon() {
@@ -3848,6 +4341,49 @@ component Polygon() {
 }`;
 
 				const result = await format(expected, { singleQuote: true, printWidth: 100 });
+				expect(result).toBeWithNewline(expected);
+			});
+
+			it('should preserve blank line between commented out block and following element', async () => {
+				const expected = `component App() {
+  <div id="second-top-block">
+    <div>
+      <div />
+    </div>
+    <div id="sibling-block">{"Sibling"}</div>
+  </div>
+
+  // if (show) {
+  // 	<div id="third-top-block">{"Top Scope - Show is true"}</div>
+  // }
+
+  <button onClick={() => (b = !b)}>{"Toggle b"}</button>
+}`;
+
+				const result = await format(expected, { printWidth: 100 });
+				expect(result).toBeWithNewline(expected);
+			});
+
+			it('should preserve blank line after multi-line comment block followed by element in component body', async () => {
+				const expected = `component App() {
+  <div>
+    <div>
+      let x = 1;
+
+      // inner comment
+      <div />
+    </div>
+    <div>{"Sibling"}</div>
+  </div>
+
+  // if (show) {
+  // 	<div>{"Top Scope - Show is true"}</div>
+  // }
+
+  <button onClick={() => (b = !b)}>{"Toggle b"}</button>
+}`;
+
+				const result = await format(expected, { printWidth: 100 });
 				expect(result).toBeWithNewline(expected);
 			});
 		});
@@ -4059,6 +4595,21 @@ component Polygon() {
 		});
 
 		describe('<tsx:react>', () => {
+			it('should preserve namespace in generic JSX namespaced tags', async () => {
+				const input = `component App() {
+	<tsx:react><xml:space></xml:space></tsx:react>
+}`;
+
+				const expected = `component App() {
+  <tsx:react>
+    <xml:space></xml:space>
+  </tsx:react>
+}`;
+
+				const result = await format(input, { singleQuote: true });
+				expect(result).toBeWithNewline(expected);
+			});
+
 			it('should format JSX inside <tsx:react> tags', async () => {
 				const input = `component App() {
 	<div>
@@ -4257,25 +4808,25 @@ component Polygon() {
 				expect(result).toBeWithNewline(expected);
 			});
 
-			it('should preserve @ symbol in JSX attributes inside <tsx:react>', async () => {
+			it('should format JSX attributes inside <tsx:react>', async () => {
 				const input = `component App() {
-	const count = track(0);
+	const &[count] = track(0);
 
 	<div>
 		<h1>{'Hello, from Ripple!'}</h1>
 		<tsx:react>
-			<Counter count={@count} />
+			<Counter count={count} />
 		</tsx:react>
 	</div>
 }`;
 
 				const expected = `component App() {
-  const count = track(0);
+  const &[count] = track(0);
 
   <div>
     <h1>{'Hello, from Ripple!'}</h1>
     <tsx:react>
-      <Counter count={@count} />
+      <Counter count={count} />
     </tsx:react>
   </div>
 }`;
@@ -4327,7 +4878,7 @@ component App() {
 	<tsx:react>
 		Hello world
 		<DemoContext.Provider value={"Hello from Context!"}>
-			<Child count={@count} />
+			<Child count={count} />
 		</DemoContext.Provider>
 	</tsx:react>
 }`;
@@ -4335,7 +4886,7 @@ component App() {
   <tsx:react>
     Hello world
     <DemoContext.Provider value={"Hello from Context!"}>
-      <Child count={@count} />
+      <Child count={count} />
     </DemoContext.Provider>
   </tsx:react>
 }`;
@@ -4385,6 +4936,346 @@ component App() {
 				const result = await format(input);
 				expect(result).toBeWithNewline(expected);
 			});
+		});
+
+		describe('if statement formatting', () => {
+			it('should format chained if-else statements with non-block bodies on separate lines', async () => {
+				const input = `component Test() {
+  <button
+    onClick={() => {
+if (status === 'a') status = 'b'; else if (status === 'b') status = 'c'; else status =
+  'a';
+}}
+  >
+    {'Click'}
+  </button>
+}`;
+				const expected = `component Test() {
+  <button
+    onClick={() => {
+      if (status === 'a') status = 'b';
+      else if (status === 'b') status = 'c';
+      else status = 'a';
+    }}
+  >
+    {'Click'}
+  </button>
+}`;
+
+				const result = await format(input, { singleQuote: true });
+				expect(result).toBeWithNewline(expected);
+			});
+
+			it('should format simple if statement with non-block body', async () => {
+				const input = `component Test() {
+  let x = 0;
+  if (x === 0) x = 1;
+  <div>{x}</div>
+}`;
+				const expected = `component Test() {
+  let x = 0;
+  if (x === 0) x = 1;
+  <div>{x}</div>
+}`;
+
+				const result = await format(input, { singleQuote: true });
+				expect(result).toBeWithNewline(expected);
+			});
+
+			it('should format if-else with non-block bodies', async () => {
+				const input = `component Test() {
+  let x = 0;
+  if (x === 0) x = 1; else x = 2;
+  <div>{x}</div>
+}`;
+				const expected = `component Test() {
+  let x = 0;
+  if (x === 0) x = 1;
+  else x = 2;
+  <div>{x}</div>
+}`;
+
+				const result = await format(input, { singleQuote: true });
+				expect(result).toBeWithNewline(expected);
+			});
+
+			it('should format nested if statements with non-block bodies', async () => {
+				const input = `component Test() {
+  let x = 0;
+  if (x === 0) if (x === 1) x = 2; else x = 3;
+  <div>{x}</div>
+}`;
+				const expected = `component Test() {
+  let x = 0;
+  if (x === 0)
+    if (x === 1) x = 2;
+    else x = 3;
+  <div>{x}</div>
+}`;
+
+				const result = await format(input, { singleQuote: true });
+				expect(result).toBeWithNewline(expected);
+			});
+		});
+
+		it('should not move comments before if statement into the test condition', async () => {
+			const input = `component App() {
+  <div id="second-top-block">
+    // <div>
+    if (true) {
+      <div>{'b is true'}</div>
+    }
+    // <div>
+    // <div>
+    // if (@b) {
+    // <span>nested</span>
+    // }
+    // </div>
+    // </div>
+    // <div />
+    // </div>
+    // <div id="sibling-block">{'Sibling'}</div>
+  </div>
+}`;
+			const expected = `component App() {
+  <div id="second-top-block">
+    // <div>
+    if (true) {
+      <div>{'b is true'}</div>
+    }
+    // <div>
+    // <div>
+    // if (@b) {
+    // <span>nested</span>
+    // }
+    // </div>
+    // </div>
+    // <div />
+    // </div>
+    // <div id="sibling-block">{'Sibling'}</div>
+  </div>
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should not move comments before while statement into the test condition', async () => {
+			const input = `function test() {
+  let i = 0;
+  // comment before while
+  while (i < 10) {
+    i++;
+  }
+}`;
+			const expected = `function test() {
+  let i = 0;
+  // comment before while
+  while (i < 10) {
+    i++;
+  }
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should not move comments before for-of statement into the right expression', async () => {
+			const input = `function test() {
+  // comment before for-of
+  for (const item of items) {
+    console.log(item);
+  }
+}`;
+			const expected = `function test() {
+  // comment before for-of
+  for (const item of items) {
+    console.log(item);
+  }
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should not move comments before switch statement into the discriminant', async () => {
+			const input = `function test() {
+  let x = 1;
+  // comment before switch
+  switch (x) {
+    case 1:
+      console.log('one');
+  }
+}`;
+			const expected = `function test() {
+  let x = 1;
+  // comment before switch
+  switch (x) {
+    case 1:
+      console.log('one');
+  }
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should handle multiple comments before if statement', async () => {
+			const input = `function test() {
+  // comment 1
+  // comment 2
+  if (true) {
+    console.log('test');
+  }
+}`;
+			const expected = `function test() {
+  // comment 1
+  // comment 2
+  if (true) {
+    console.log('test');
+  }
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should handle comments before try/catch blocks', async () => {
+			const input = `function test() {
+  // comment before try
+  try {
+    doSomething();
+  } catch (e) {
+    console.error(e);
+  }
+}`;
+			const expected = `function test() {
+  // comment before try
+  try {
+    doSomething();
+  } catch (e) {
+    console.error(e);
+  }
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should handle comments before try/catch/finally blocks', async () => {
+			const input = `function test() {
+  // comment before try
+  try {
+    doSomething();
+  } catch (e) {
+    console.error(e);
+  } finally {
+    cleanup();
+  }
+}`;
+			const expected = `function test() {
+  // comment before try
+  try {
+    doSomething();
+  } catch (e) {
+    console.error(e);
+  } finally {
+    cleanup();
+  }
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should handle comments inside try/catch blocks', async () => {
+			const input = `function test() {
+  try {
+    // comment inside try
+    doSomething();
+  } catch (e) {
+    // comment inside catch
+    console.error(e);
+  }
+}`;
+			const expected = `function test() {
+  try {
+    // comment inside try
+    doSomething();
+  } catch (e) {
+    // comment inside catch
+    console.error(e);
+  }
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should handle block comments with try/catch', async () => {
+			const input = `function test() {
+  /* block comment before try */
+  try {
+    doSomething();
+  } catch (e) {
+    /* block comment in catch */
+    console.error(e);
+  }
+}`;
+			const expected = `function test() {
+  /* block comment before try */
+  try {
+    doSomething();
+  } catch (e) {
+    /* block comment in catch */
+    console.error(e);
+  }
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
+		});
+
+		it('should handle comments before try block in Ripple component', async () => {
+			const input = `component App() {
+  <div id="second-top-block">
+    // <div>
+    try {
+      <div>{'b is true'}</div>
+    } catch (e) {}
+    // 	<div>
+    // 		<div>
+    // 			if (@b) {
+    // 				return;
+    // 			}
+    // 		</div>
+    // 	</div>
+    // 	<div />
+    // </div>
+    // <div id="sibling-block">{'Sibling'}</div>
+  </div>
+}`;
+			const expected = `component App() {
+  <div id="second-top-block">
+    // <div>
+    try {
+      <div>{'b is true'}</div>
+    } catch (e) {}
+    // 	<div>
+    // 		<div>
+    // 			if (@b) {
+    // 				return;
+    // 			}
+    // 		</div>
+    // 	</div>
+    // 	<div />
+    // </div>
+    // <div id="sibling-block">{'Sibling'}</div>
+  </div>
+}`;
+
+			const result = await format(input, { singleQuote: true });
+			expect(result).toBeWithNewline(expected);
 		});
 	});
 });

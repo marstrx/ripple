@@ -7,16 +7,30 @@
 	"plugins": ["@ripple-ts/prettier-plugin"],
 	"overrides": [
 		{
-			"files": ["*.ripple"],
+			"files": ["*.ripple", "*.rsrx", "*.tsrx"],
 			"options": {
 				"bracketSameLine": false,
 				"parser": "ripple"
 			}
 		},
 		{
-			"files": ["**/*.md", "**/*.json"],
+			"files": ["**/*.md"],
+			"options": {
+				"useTabs": false,
+				"printWidth": 82,
+				"proseWrap": "always"
+			}
+		},
+		{
+			"files": ["**/*.json"],
 			"options": {
 				"useTabs": false
+			}
+		},
+		{
+			"files": ["**/*.yml", "**/*.yaml"],
+			"options": {
+				"singleQuote": false
 			}
 		}
 	]

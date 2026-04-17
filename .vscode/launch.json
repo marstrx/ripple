@@ -2,7 +2,7 @@
   "version": "0.2.1",
   "configurations": [
     {
-      "name": "Debug VSCode Extension",
+      "name": "VSCode Extension",
       "type": "extensionHost",
       "request": "launch",
       "autoAttachChildProcesses": true,
@@ -18,31 +18,45 @@
       }
     },
     {
-      "name": "Debug Ripple Compiler (Vite)",
-      "type": "node",
-      "request": "launch",
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}/playground",
-      "runtimeExecutable": "node",
-      "runtimeArgs": ["--inspect"],
-      "program": "${workspaceFolder}/playground/node_modules/vite/bin/vite.js",
-      "args": ["--host"],
-      "autoAttachChildProcesses": true,
-      "skipFiles": ["<node_internals>/**"],
-      "sourceMaps": true
-    },
-    {
-      "name": "Debug All Tests - Vitest",
+      "name": "Ripple Tests - Current Tab",
       "type": "node",
       "request": "launch",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["run", "test", "--", "--inspect-brk", "--no-file-parallelism"],
+      "runtimeArgs": [
+        "run",
+        "test",
+        "${relativeFile}",
+        "-t",
+        "${input:rippeTestNamePattern}",
+        "--",
+        "--inspect-brk",
+        "--no-file-parallelism"
+      ],
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen",
       "skipFiles": ["<node_internals>/**"]
     },
     {
-      "name": "Debug Volar Transform / Mappings",
+      "name": "Ripple Tests - File Path",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "run",
+        "test",
+        "${input:rippleTestFile}",
+        "-t",
+        "${input:rippeTestNamePattern}",
+        "--",
+        "--inspect-brk",
+        "--no-file-parallelism"
+      ],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Volar Codegen / Mappings",
       "type": "node",
       "request": "launch",
       "cwd": "${workspaceFolder}/playground",
@@ -53,7 +67,7 @@
       "skipFiles": ["<node_internals>/**"]
     },
     {
-      "name": "Debug SSR Rendering",
+      "name": "SSR Rendering",
       "type": "node",
       "request": "launch",
       "cwd": "${workspaceFolder}/playground",
@@ -64,7 +78,7 @@
       "skipFiles": ["<node_internals>/**"]
     },
     {
-      "name": "Debug SSR Runtime",
+      "name": "SSR Runtime - From Compiled",
       "type": "node",
       "request": "launch",
       "cwd": "${workspaceFolder}/playground",
@@ -75,6 +89,92 @@
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen",
       "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Client Rendering",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/playground",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["run", "debug-client"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "skipFiles": ["<node_internals>/**"]
+    },
+    {
+      "name": "Client Runtime - Vite",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/playground",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["run", "dev"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "presentation": {
+        "hidden": true
+      }
+    },
+    {
+      "name": "Client Runtime - Browser",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/playground",
+      "runtimeArgs": [
+        "--auto-open-devtools-for-tabs",
+        "--user-data-dir=${workspaceFolder}/.vscode/chrome-client-debug-profile"
+      ],
+      "pathMapping": {
+        "/@fs/": "/"
+      },
+      "resolveSourceMapLocations": null,
+      "presentation": {
+        "hidden": true
+      },
+      "preLaunchTask": "client-runtime-prelaunch"
+    },
+    {
+      "name": "Vite Plugin",
+      "type": "node",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}/playground",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--inspect"],
+      "program": "${workspaceFolder}/playground/node_modules/vite/bin/vite.js",
+      "args": ["--host"],
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**"],
+      "sourceMaps": true,
+      "presentation": {
+        "hidden": true
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Client Runtime - From Source",
+      "configurations": ["Client Runtime - Vite", "Client Runtime - Browser"],
+      "stopAll": true
+    },
+    {
+      "name": "Vite Plugin - Client",
+      "configurations": ["Vite Plugin"],
+      "stopAll": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "rippleTestFile",
+      "type": "promptString",
+      "description": "Test file path",
+      "default": "${relativeFile}"
+    },
+    {
+      "id": "rippeTestNamePattern",
+      "type": "promptString",
+      "description": "(Optional): Test name pattern to match",
+      "default": ""
     }
   ]
 }

@@ -2,7 +2,7 @@
 @import * as AST from 'estree';
 @import * as ESTreeJSX from 'estree-jsx';
 @import { DocumentHighlightKind } from 'vscode-languageserver-types';
-@import { SourceMapMappings } from '@jridgewell/sourcemap-codec';
+@import { RawSourceMap } from 'source-map';
 @import {
 	CustomMappingData,
 	PluginActionOverrides,
@@ -10,6 +10,7 @@
 	VolarMappingsResult,
 } from 'ripple/compiler';
 @import { PostProcessingChanges } from './client/index.js';
+@import { CodeMapping as VolarCodeMapping } from '@volar/language-core';
  */
 
 /**
@@ -23,8 +24,9 @@
 	source: string | null | undefined;
 	generated: string;
 	loc: AST.SourceLocation;
+	metadata: PluginActionOverrides;
 	end_loc?: AST.SourceLocation;
-	metadata?: PluginActionOverrides;
+	mappingData?: Partial<VolarCodeMapping['data']>;
 }} Token;
 @typedef {{
 	name: string,
@@ -45,9 +47,23 @@ import {
 	loc_to_offset,
 	mapping_data,
 	mapping_data_verify_only,
+	mapping_data_verify_complete,
 	build_line_offsets,
 	get_mapping_from_node,
 } from '../../source-map-utils.js';
+
+const LABEL_TO_COMPONENT_REPLACE_REGEX = /(function|\((property|method)\))/;
+
+/**
+ * @param {string} content
+ * @returns {string}
+ */
+function replace_label_to_component(content) {
+	return content.replace(LABEL_TO_COMPONENT_REPLACE_REGEX, (_, fn, kind) => {
+		if (fn === 'function') return 'component';
+		return `(component ${kind})`;
+	});
+}
 
 /**
  * @param {string} [hash]
@@ -73,7 +89,7 @@ function visit_source_ast(ast, src_line_offsets, { regions, css_element_info }) 
 	walk(ast, null, {
 		Element(node, context) {
 			// Check if this is a style element with CSS content
-			if (node.id?.name === 'style' && node.css) {
+			if (node.id?.type === 'Identifier' && node.id?.name === 'style' && node.css) {
 				const openLoc = /** @type {ESTreeJSX.JSXOpeningElement & AST.NodeWithLocation} */ (
 					node.openingElement
 				).loc;
@@ -267,7 +283,7 @@ function extract_classes(node, src_to_gen_map, gen_line_offsets, src_line_offset
  * @param {AST.Node} ast_from_source - The original AST from source
  * @param {string} source - Original source code
  * @param {string} generated_code - Generated code (returned in output, not used for searching)
- * @param {SourceMapMappings} source_map - Esrap source map for accurate position lookup
+ * @param {RawSourceMap} source_map - Esrap source map for accurate position lookup
  * @param {PostProcessingChanges } post_processing_changes - Optional post-processing changes
  * @param {number[]} line_offsets - Pre-computed line offsets array for generated code
  * @returns {Omit<VolarMappingsResult, 'errors'>}
@@ -307,6 +323,85 @@ export function convert_source_map_to_mappings(
 		css_element_info,
 	});
 
+	/**
+	 * Needed for a mapping that includes the computed brackets for diagnostics
+	 * @param {AST.MethodDefinition | AST.Property} node
+	 * @param {CodeMapping[]} mappings
+	 * @returns {void}
+	 */
+	function set_bracket_computed_mapping(node, mappings) {
+		if (node.loc) {
+			const key = /** @type {typeof node.key & AST.NodeWithLocation} */ (node.key);
+			mappings.push(
+				get_mapping_from_node(
+					/** @type {AST.NodeWithLocation} */ ({
+						start: key.start - 1,
+						end: key.end + 1,
+						loc: {
+							start: { line: key.loc.start.line, column: key.loc.start.column - 1 },
+							end: { line: key.loc.end.line, column: key.loc.end.column + 1 },
+						},
+					}),
+					src_to_gen_map,
+					gen_line_offsets,
+					mapping_data_verify_only,
+				),
+			);
+		}
+	}
+
+	/**
+	 * @typedef {AST.MethodDefinition & {value: {metadata: {is_component: true}}}} MethodIsComponent
+	 * @typedef {AST.Property & {value: AST.FunctionExpression, method: true} & {value: {metadata: {is_component: true}}}} PropertyIsComponent
+	 */
+
+	/**
+	 * Maps `component` to the identifier's location
+	 * e.g. const obj = { component something() { } }
+	 * since there is no function keyword in source maps
+	 * @param {MethodIsComponent | PropertyIsComponent} node
+	 * @returns {void}
+	 */
+	function set_component_mapping_to_name(node) {
+		if (node.key.loc) {
+			/** @type {CodeMapping} */
+			let mapping;
+			let start = /** @type {AST.NodeWithLocation} */ (node).start;
+			let length = 'component'.length;
+
+			if (node.value.type === 'FunctionExpression' && node.value.id) {
+				const id = /** @type {AST.Identifier & AST.NodeWithLocation} */ (node.value.id);
+				mapping = get_mapping_from_node(id, src_to_gen_map, gen_line_offsets);
+			} else {
+				// e.g. key is computed or literal
+				mapping = get_mapping_from_node(node.key, src_to_gen_map, gen_line_offsets);
+			}
+
+			// overwrite source start and length to point to 'component' keyword
+			mapping.sourceOffsets = [start];
+			mapping.lengths = [length];
+			mapping.data.customData.hover = replace_label_to_component;
+
+			mappings.push(mapping);
+		}
+	}
+
+	/**
+	 * @param {AST.Literal} node
+	 * @param {boolean} [is_component]
+	 */
+	function handle_literal(node, is_component = false) {
+		if (node.loc) {
+			const mapping = get_mapping_from_node(node, src_to_gen_map, gen_line_offsets);
+
+			if (is_component) {
+				mapping.data.customData.hover = replace_label_to_component;
+			}
+
+			mappings.push(mapping);
+		}
+	}
+
 	// We have to visit everything in generated order to maintain correct indices
 
 	walk(ast, null, {
@@ -316,29 +411,31 @@ export function convert_source_map_to_mappings(
 				// Only create mappings for identifiers with location info (from source)
 				// Synthesized identifiers (created by builders) don't have .loc and are skipped
 				if (node.name && node.loc) {
-					// Check if this identifier was changed in metadata (e.g., #Map -> TrackedMap)
+					/** @type {Token} */
+					let token;
+					// Check if this identifier was changed in metadata (e.g., #Map -> RippleMap)
 					// Or if it was capitalized during transformation
 					if (node.metadata?.source_name) {
-						tokens.push({
+						token = {
 							source: node.metadata.source_name,
 							generated: node.name,
 							loc: node.loc,
-						});
+							metadata: {},
+						};
 					} else {
-						const token = /** @type {Token} */ ({
+						token = {
 							source: node.name,
 							generated: node.name,
 							loc: node.loc,
-						});
-						if (node.name === '#') {
-							// Suppress 'Invalid character' to allow typing out the shorthands
-							token.metadata = {
-								suppressedDiagnostics: [1127],
-							};
-						}
-						// No transformation - source and generated names are the same
-						tokens.push(token);
+							metadata: {},
+						};
 					}
+
+					if (node.metadata?.is_component) {
+						// only if the node has a component as the parent
+						token.metadata.hover = replace_label_to_component;
+					}
+					tokens.push(token);
 				}
 				return; // Leaf node, don't traverse further
 			} else if (node.type === 'JSXIdentifier') {
@@ -349,18 +446,15 @@ export function convert_source_map_to_mappings(
 							source: node.metadata.source_name,
 							generated: node.name,
 							loc: node.loc,
+							metadata: {},
 						});
 					} else {
-						tokens.push({ source: node.name, generated: node.name, loc: node.loc });
+						tokens.push({ source: node.name, generated: node.name, loc: node.loc, metadata: {} });
 					}
 				}
 				return; // Leaf node, don't traverse further
 			} else if (node.type === 'Literal') {
-				if (node.loc) {
-					mappings.push(
-						get_mapping_from_node(node, src_to_gen_map, gen_line_offsets, mapping_data_verify_only),
-					);
-				}
+				handle_literal(node);
 				return; // Leaf node, don't traverse further
 			} else if (node.type === 'ImportDeclaration') {
 				isImportDeclarationPresent = true;
@@ -382,6 +476,7 @@ export function convert_source_map_to_mappings(
 								column: node.loc.start.column + 'import'.length,
 							},
 						},
+						metadata: {},
 					});
 
 					tokens.push({
@@ -396,6 +491,7 @@ export function convert_source_map_to_mappings(
 							},
 							end: node.loc.end,
 						},
+						metadata: {},
 					});
 				}
 
@@ -517,13 +613,10 @@ export function convert_source_map_to_mappings(
 								data: {
 									...mapping_data,
 									customData: {
-										generatedLengths: [length],
-										hover: {
-											contents:
-												'```css\n.' +
-												name +
-												'\n```\n\nCSS class selector.\n\nUse **Cmd+Click** (macOS) or **Ctrl+Click** (Windows/Linux) to navigate to its definition.',
-										},
+										hover:
+											'```css\n.' +
+											name +
+											'\n```\n\nCSS class selector.\n\nUse **Cmd+Click** (macOS) or **Ctrl+Click** (Windows/Linux) to navigate to its definition.',
 										definition: {
 											description: `CSS class selector for '.${name}'`,
 											location: {
@@ -540,6 +633,26 @@ export function convert_source_map_to_mappings(
 						if (node.name) {
 							visit(node.name);
 						}
+
+						if (
+							node.name.type === 'JSXIdentifier' &&
+							node.name.metadata?.is_component &&
+							node.name.loc
+						) {
+							const mapping = get_mapping_from_node(
+								node.name,
+								src_to_gen_map,
+								gen_line_offsets,
+								mapping_data,
+							);
+							mapping.sourceOffsets = [
+								/** @type {AST.NodeWithLocation} */ (node.name).start - 'component '.length,
+							];
+							mapping.lengths = ['component'.length];
+
+							mapping.data.customData.hover = replace_label_to_component;
+							mappings.push(mapping);
+						}
 						if (node.value) {
 							visit(node.value);
 						}
@@ -553,6 +666,11 @@ export function convert_source_map_to_mappings(
 				}
 				return;
 			} else if (node.type === 'JSXExpressionContainer') {
+				if (node.loc) {
+					mappings.push(
+						get_mapping_from_node(node, src_to_gen_map, gen_line_offsets, mapping_data_verify_only),
+					);
+				}
 				// Visit the expression inside {}
 				if (node.expression) {
 					visit(node.expression);
@@ -571,20 +689,18 @@ export function convert_source_map_to_mappings(
 
 				if (opening.loc) {
 					// Add tokens for '<' and '>' brackets to ensure auto-close feature works
-					if (opening.loc) {
-						// Add '<' bracket
-						tokens.push({
-							source: '<',
-							generated: '<',
-							loc: {
-								start: { line: opening.loc.start.line, column: opening.loc.start.column },
-								end: { line: opening.loc.start.line, column: opening.loc.start.column + 1 },
-							},
-						});
-					}
+					tokens.push({
+						source: '<',
+						generated: '<',
+						loc: {
+							start: { line: opening.loc.start.line, column: opening.loc.start.column },
+							end: { line: opening.loc.start.line, column: opening.loc.start.column + 1 },
+						},
+						metadata: {},
+						mappingData: mapping_data_verify_only,
+					});
 
 					if (!opening.selfClosing) {
-						// Add '>' bracket
 						tokens.push({
 							source: '>',
 							generated: '>',
@@ -592,6 +708,10 @@ export function convert_source_map_to_mappings(
 								start: { line: opening.loc.end.line, column: opening.loc.end.column - 1 },
 								end: { line: opening.loc.end.line, column: opening.loc.end.column },
 							},
+							metadata: {},
+							// we need the completion only on the closing tag `>`
+							// to cause the closing tag to be auto-added
+							mappingData: mapping_data_verify_complete,
 						});
 					}
 				}
@@ -605,17 +725,27 @@ export function convert_source_map_to_mappings(
 					}
 				}
 
-				if (closing) {
-					// Add the whole closing tag
-					mappings.push(
-						get_mapping_from_node(
-							closing,
-							src_to_gen_map,
-							gen_line_offsets,
-							mapping_data_verify_only,
-						),
+				if (closing || opening.selfClosing) {
+					// Add the whole closing tag or the self-closing
+					const mapping = get_mapping_from_node(
+						closing ? closing : opening,
+						src_to_gen_map,
+						gen_line_offsets,
+						mapping_data_verify_only,
 					);
 
+					// The generated code includes a semicolon after the closing or self-closed tag
+					// We're extending the mapping to include the semicolon
+					// because the diagnostics errors can include the whole element
+					// and we need to account for the semicolon as it's a part of the diagnostic
+					// At the same time, we could've instead applied this logic to the whole `node` element
+					// but since we already map the opening - start, we just need the proper end
+					// and it was causing some issues with mappings
+					mapping.generatedLengths = [mapping.generatedLengths[0] + 1];
+					mappings.push(mapping);
+				}
+
+				if (closing) {
 					visit(closing);
 				}
 
@@ -625,54 +755,66 @@ export function convert_source_map_to_mappings(
 				node.type === 'FunctionExpression' ||
 				node.type === 'ArrowFunctionExpression'
 			) {
+				const is_method = node.metadata?.is_method;
 				// Add function/component keyword token
-				if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression') {
+				if (
+					(node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression') &&
+					!is_method
+				) {
 					const node_fn = /** @type (typeof node) & AST.NodeWithLocation */ (node);
-					const was_component = node_fn.metadata?.was_component;
-					const source_func_keyword = was_component ? 'component' : 'function';
+					const is_component = node_fn.metadata?.is_component;
+					const source_func_keyword = is_component ? 'component' : 'function';
 					let start_col = node_fn.loc.start.column;
+					let start = node_fn.start;
 					const async_keyword = 'async';
 
-					// Avoid mapping property functions, e.g. obj = { myFunc() { } }
-					if (node.id || was_component) {
+					if (node_fn.async) {
 						// We explicitly mapped async and function in esrap
-						if (node_fn.async) {
-							tokens.push({
-								source: async_keyword,
-								generated: async_keyword,
-								loc: {
-									start: { line: node_fn.loc.start.line, column: start_col },
-									end: {
-										line: node_fn.loc.start.line,
-										column: start_col + async_keyword.length,
-									},
-								},
-							});
-
-							start_col += async_keyword.length + 1; // +1 for space
-						}
-
 						tokens.push({
-							source: source_func_keyword,
-							generated: 'function',
+							source: async_keyword,
+							generated: async_keyword,
 							loc: {
 								start: { line: node_fn.loc.start.line, column: start_col },
 								end: {
 									line: node_fn.loc.start.line,
-									column: start_col + source_func_keyword.length,
+									column: start_col + async_keyword.length,
 								},
 							},
+							metadata: {},
 						});
+
+						start_col += async_keyword.length + 1; // +1 for space
+						start += async_keyword.length + 1;
 					}
+
+					tokens.push({
+						source: source_func_keyword,
+						generated: 'function',
+						loc: {
+							start: { line: node_fn.loc.start.line, column: start_col },
+							end: {
+								line: node_fn.loc.start.line,
+								column: start_col + source_func_keyword.length,
+							},
+						},
+						metadata: is_component ? { hover: replace_label_to_component } : {},
+					});
 				}
 
 				// Visit in source order: id, params, body
-				if (/** @type {AST.FunctionDeclaration | AST.FunctionExpression} */ (node).id) {
+				// If it's a part of a method, skip visiting id
+				// as the name was already covered by the key in MethodDefinition or Property
+				if (
+					/** @type {AST.FunctionDeclaration | AST.FunctionExpression} */ (node).id &&
+					!is_method
+				) {
 					visit(/** @type {AST.FunctionDeclaration | AST.FunctionExpression} */ (node).id);
 				}
+
 				if (node.typeParameters) {
 					visit(node.typeParameters);
 				}
+
 				if (node.params) {
 					for (const param of node.params) {
 						visit(param);
@@ -681,6 +823,11 @@ export function convert_source_map_to_mappings(
 						}
 					}
 				}
+
+				if (node.returnType) {
+					visit(node.returnType);
+				}
+
 				if (node.body) {
 					visit(node.body);
 				}
@@ -711,26 +858,86 @@ export function convert_source_map_to_mappings(
 				if (node.test) {
 					visit(node.test);
 				}
+
 				if (node.consequent) {
-					mappings.push(
-						get_mapping_from_node(
-							node.consequent,
-							src_to_gen_map,
-							gen_line_offsets,
-							mapping_data_verify_only,
-						),
-					);
+					if (node.consequent.loc) {
+						// We're mapping only the brackets because mapping the whole thing
+						// would be way too broad and causes
+						// issues with partial mapping of something inside the body that we need
+						tokens.push(
+							{
+								source: '{',
+								generated: '{',
+								loc: {
+									start: {
+										line: node.consequent.loc.start.line,
+										column: node.consequent.loc.start.column,
+									},
+									end: {
+										line: node.consequent.loc.start.line,
+										column: node.consequent.loc.start.column + 1,
+									},
+								},
+								metadata: {},
+								mappingData: mapping_data_verify_only,
+							},
+							{
+								source: '}',
+								generated: '}',
+								loc: {
+									start: {
+										line: node.consequent.loc.end.line,
+										column: node.consequent.loc.end.column - 1,
+									},
+									end: {
+										line: node.consequent.loc.end.line,
+										column: node.consequent.loc.end.column,
+									},
+								},
+								metadata: {},
+								mappingData: mapping_data_verify_only,
+							},
+						);
+					}
+
 					visit(node.consequent);
 				}
+
 				if (node.alternate) {
-					mappings.push(
-						get_mapping_from_node(
-							node.alternate,
-							src_to_gen_map,
-							gen_line_offsets,
-							mapping_data_verify_only,
-						),
-					);
+					if (node.alternate.loc) {
+						tokens.push(
+							{
+								source: '{',
+								generated: '{',
+								loc: {
+									start: {
+										line: node.alternate.loc.start.line,
+										column: node.alternate.loc.start.column,
+									},
+									end: {
+										line: node.alternate.loc.start.line,
+										column: node.alternate.loc.start.column + 1,
+									},
+								},
+								metadata: {},
+								mappingData: mapping_data_verify_only,
+							},
+							{
+								source: '}',
+								generated: '}',
+								loc: {
+									start: {
+										line: node.alternate.loc.end.line,
+										column: node.alternate.loc.end.column - 1,
+									},
+									end: { line: node.alternate.loc.end.line, column: node.alternate.loc.end.column },
+								},
+								metadata: {},
+								mappingData: mapping_data_verify_only,
+							},
+						);
+					}
+
 					visit(node.alternate);
 				}
 
@@ -848,10 +1055,7 @@ export function convert_source_map_to_mappings(
 							hover: false,
 
 							// Example of a custom hover contents (uses markdown)
-							// hover: {
-							// 	contents:
-							// 		'```ripple\npending\n```\n\nRipple-specific keyword for try/pending blocks.\n\nThe `pending` block executes while async operations inside the `try` block are awaiting. This provides a built-in loading state for async components.',
-							// },
+							// hover:	'```ripple\npending\n```\n\nRipple-specific keyword for try/pending blocks.\n\nThe `pending` block executes while async operations inside the `try` block are awaiting. This provides a built-in loading state for async components.',
 
 							// Example of a custom definition and its type definition file
 							// definition: {
@@ -872,9 +1076,12 @@ export function convert_source_map_to_mappings(
 				}
 				return;
 			} else if (node.type === 'CatchClause') {
-				// Visit in source order: param, body
+				// Visit in source order: param, resetParam, body
 				if (node.param) {
 					visit(node.param);
+				}
+				if (node.resetParam) {
+					visit(node.resetParam);
 				}
 				if (node.body) {
 					visit(node.body);
@@ -912,9 +1119,14 @@ export function convert_source_map_to_mappings(
 				return;
 			} else if (node.type === 'MemberExpression') {
 				if (node.loc) {
-					mappings.push(
-						get_mapping_from_node(node, src_to_gen_map, gen_line_offsets, mapping_data_verify_only),
+					const mapping = get_mapping_from_node(
+						node,
+						src_to_gen_map,
+						gen_line_offsets,
+						mapping_data_verify_only,
 					);
+
+					mappings.push(mapping);
 				}
 
 				if (node.object) {
@@ -980,9 +1192,27 @@ export function convert_source_map_to_mappings(
 						visit(node.value);
 					}
 				} else {
-					if (node.key) {
+					if (node.computed) {
+						set_bracket_computed_mapping(node, mappings);
+					}
+
+					if (
+						node.value.type === 'FunctionExpression' &&
+						node.method &&
+						node.value.metadata.is_component
+					) {
+						set_component_mapping_to_name(/** @type {PropertyIsComponent} */ (node));
+					}
+
+					if (node.key.type === 'Literal') {
+						handle_literal(
+							node.key,
+							/** @type {AST.FunctionExpression} */ (node.value).metadata.is_component,
+						);
+					} else {
 						visit(node.key);
 					}
+
 					if (node.value) {
 						visit(node.value);
 					}
@@ -1015,9 +1245,11 @@ export function convert_source_map_to_mappings(
 				}
 				return;
 			} else if (node.type === 'TemplateLiteral') {
-				mappings.push(
-					get_mapping_from_node(node, src_to_gen_map, gen_line_offsets, mapping_data_verify_only),
-				);
+				if (node.loc) {
+					mappings.push(
+						get_mapping_from_node(node, src_to_gen_map, gen_line_offsets, mapping_data_verify_only),
+					);
+				}
 
 				// Visit quasis and expressions in order
 				for (let i = 0; i < node.quasis.length; i++) {
@@ -1042,6 +1274,22 @@ export function convert_source_map_to_mappings(
 				// Visit argument
 				if (node.argument) {
 					visit(node.argument);
+				}
+
+				if (node.type === 'ReturnStatement' && node.loc) {
+					const mapping = get_mapping_from_node(
+						node,
+						src_to_gen_map,
+						gen_line_offsets,
+						mapping_data_verify_only,
+					);
+					// We're only mapping the 'return' keyword, otherwise the mapping would be too broad
+					// and likely may cause issues with partial mappings of something inside the return statement that we need
+					const return_keyword_length = 'return'.length;
+					mapping.lengths = [return_keyword_length];
+					mapping.generatedLengths = [return_keyword_length];
+
+					mappings.push(mapping);
 				}
 				return;
 			} else if (node.type === 'ExpressionStatement') {
@@ -1105,10 +1353,23 @@ export function convert_source_map_to_mappings(
 				}
 				return;
 			} else if (node.type === 'MethodDefinition') {
-				// Visit in source order: key, value
-				if (node.key) {
+				if (node.computed) {
+					set_bracket_computed_mapping(node, mappings);
+				}
+
+				if (node.value.metadata.is_component) {
+					set_component_mapping_to_name(/** @type {MethodIsComponent} */ (node));
+				}
+
+				if (node.key.type === 'Literal') {
+					handle_literal(
+						node.key,
+						/** @type {AST.FunctionExpression} */ (node.value).metadata.is_component,
+					);
+				} else {
 					visit(node.key);
 				}
+
 				if (node.value) {
 					visit(node.value);
 				}
@@ -1152,13 +1413,6 @@ export function convert_source_map_to_mappings(
 						max_len,
 						max_len,
 					);
-
-					if (node.metadata?.inside_component_top_level) {
-						// Since we don't print component with async,
-						// we need to suppress the ts diagnostic on the 'await' keyword
-						// about being inside a non-async function
-						mapping.data.customData.suppressedDiagnostics = [1308];
-					}
 
 					mappings.push(mapping);
 				}
@@ -1270,6 +1524,14 @@ export function convert_source_map_to_mappings(
 				}
 				return;
 			} else if (node.type === 'ParenthesizedExpression') {
+				if (node.metadata.forceMapping && node.loc) {
+					const mapping = get_mapping_from_node(node, src_to_gen_map, gen_line_offsets);
+					if (node.metadata.skipParenthesisMapping) {
+						mapping.generatedOffsets[0] = mapping.generatedOffsets[0] + 1; // Skip the opening parenthesis
+						mapping.generatedLengths[0] = mapping.generatedLengths[0] - 2; // Skip both parentheses
+					}
+					mappings.push(mapping);
+				}
 				// Visit the wrapped expression
 				if (node.expression) {
 					visit(node.expression);
@@ -1280,7 +1542,9 @@ export function convert_source_map_to_mappings(
 				if (node.expression) {
 					visit(node.expression);
 				}
-				// Skip typeAnnotation
+				if (node.typeAnnotation) {
+					visit(node.typeAnnotation);
+				}
 				return;
 			} else if (node.type === 'TSNonNullExpression') {
 				// Non-null assertion: value!
@@ -1315,7 +1579,7 @@ export function convert_source_map_to_mappings(
 				// Type parameter like T in <T> or key in mapped types
 				// Note: node.name is a string, not an Identifier node
 				if (node.name && node.loc && typeof node.name === 'string') {
-					tokens.push({ source: node.name, generated: node.name, loc: node.loc });
+					tokens.push({ source: node.name, generated: node.name, loc: node.loc, metadata: {} });
 				} else if (node.name && typeof node.name === 'object') {
 					// In some cases, name might be an Identifier node
 					visit(node.name);
@@ -1759,24 +2023,20 @@ export function convert_source_map_to_mappings(
 		const gen_start = loc_to_offset(gen_line_col.line, gen_line_col.column, gen_line_offsets);
 
 		/** @type {CustomMappingData} */
-		const customData = {
-			generatedLengths: [gen_length],
-		};
+		const customData = {};
 
 		// Add optional metadata from token if present
-		if (token.metadata) {
-			if ('wordHighlight' in token.metadata) {
-				customData.wordHighlight = token.metadata.wordHighlight;
-			}
-			if ('suppressedDiagnostics' in token.metadata) {
-				customData.suppressedDiagnostics = token.metadata.suppressedDiagnostics;
-			}
-			if ('hover' in token.metadata) {
-				customData.hover = token.metadata.hover;
-			}
-			if ('definition' in token.metadata) {
-				customData.definition = token.metadata.definition;
-			}
+		if ('wordHighlight' in token.metadata) {
+			customData.wordHighlight = token.metadata.wordHighlight;
+		}
+		if ('suppressedDiagnostics' in token.metadata) {
+			customData.suppressedDiagnostics = token.metadata.suppressedDiagnostics;
+		}
+		if ('hover' in token.metadata) {
+			customData.hover = token.metadata.hover;
+		}
+		if ('definition' in token.metadata) {
+			customData.definition = token.metadata.definition;
 		}
 
 		mappings.push({
@@ -1785,7 +2045,7 @@ export function convert_source_map_to_mappings(
 			lengths: [source_length],
 			generatedLengths: [gen_length],
 			data: {
-				...mapping_data,
+				...(token.mappingData ?? mapping_data),
 				customData,
 			},
 		});
@@ -1833,9 +2093,7 @@ export function convert_source_map_to_mappings(
 			generatedLengths: [1],
 			data: {
 				...mapping_data,
-				customData: {
-					generatedLengths: [1],
-				},
+				customData: {},
 			},
 		});
 	}
@@ -1852,7 +2110,6 @@ export function convert_source_map_to_mappings(
 			data: {
 				...mapping_data,
 				customData: {
-					generatedLengths: [region.content.length],
 					embeddedId: region.id,
 					content: region.content,
 				},
